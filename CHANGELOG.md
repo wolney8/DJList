@@ -4,6 +4,7 @@
 
 - Fix mixed UI/API builds by snapshotting assets at server startup.
 - Report running version and explain port conflicts and required restarts.
+- Avoid a macOS startup stall caused by an unnecessary hostname lookup.
 - Add automatic UK iTunes catalogue candidates, listed prices and comparison
   reasons for title, artist, mix and duration.
 - Add user-initiated promotional previews with the approved Apple badge.

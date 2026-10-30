@@ -7,7 +7,7 @@ path in this update.
 
 ## Verified locally
 
-- **45 unit/regression tests pass.** They use temporary records and simulated
+- **46 unit/regression tests pass.** They use temporary records and simulated
   provider responses; `python3 -m unittest discover -s tests -v` reproduces them.
 - **The live HTTP smoke test passes:** a real temporary loopback server serves
   health/state, saves demo edits, serves the provider route, validates the
@@ -64,6 +64,11 @@ package, visually checked and copied unchanged. See THIRD_PARTY_NOTICES.md.
 - A macOS test compared a temporary path alias with its canonical path. The
   test now captures the linked path before simulating a drive disconnection and
   verifies that the exact saved value, ownership and settings survive it.
+- The real HTTP test exposed a macOS startup stall in Python's inherited
+  reverse-DNS lookup. A timed child-process trace identified `getfqdn` before
+  the listening socket was activated. LocalServer now uses its numeric loopback
+  address directly; a regression checks that binding does not invoke DNS.
+  This also matches the [runner maintainer's reproduction](https://github.com/actions/runner-images/issues/14409#issuecomment-5034633535).
 
 ## Continuous checks
 

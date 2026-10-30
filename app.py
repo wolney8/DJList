@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+from socketserver import TCPServer
 import sqlite3
 import sys
 import threading
@@ -768,6 +769,11 @@ class Handler(BaseHTTPRequestHandler):
 
 class LocalServer(ThreadingHTTPServer):
     daemon_threads = True
+
+    def server_bind(self):
+        # HTTPServer's reverse DNS can stall on macOS; our host is numeric loopback.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def get_request(self):
         socket, address = super().get_request()

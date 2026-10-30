@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app import (API_VERSION, VERSION, Application, Handler, main,
+from app import (API_VERSION, VERSION, Application, Handler, LocalServer, main,
                  occupied_port_message, running_instance)
 
 
@@ -146,6 +146,22 @@ class RuntimeTests(unittest.TestCase):
             self.assertIsNone(running_instance(8888))
         connection.request.assert_called_once()
         self.assertIn("already in use or unavailable", occupied_port_message(8888, None))
+
+    def test_server_binds_numeric_loopback_without_reverse_dns(self):
+        socket = Mock()
+        socket.getsockname.return_value = ("127.0.0.1", 43210)
+        with patch("socketserver.socket.socket", return_value=socket), \
+             patch("http.server.socket.getfqdn", side_effect=AssertionError("Reverse DNS must not delay startup")) as lookup:
+            server = LocalServer(("127.0.0.1", 0), Handler)
+            try:
+                socket.bind.assert_called_once_with(("127.0.0.1", 0))
+                socket.getsockname.assert_called_once()
+                socket.listen.assert_called_once_with(server.request_queue_size)
+                self.assertEqual(server.server_address, ("127.0.0.1", 43210))
+                self.assertEqual((server.server_name, server.server_port), ("127.0.0.1", 43210))
+                lookup.assert_not_called()
+            finally:
+                server.server_close()
 
     def test_port_collision_does_not_initialise_data_or_open_the_old_browser(self):
         output = io.StringIO()
