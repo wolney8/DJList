@@ -27,8 +27,37 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 SCOPES = "playlist-read-private user-library-read"
 
 
+def spotify_artwork(album):
+    """Return a provider image URL only; never fetch or cache image bytes."""
+    images = album.get("images") if isinstance(album, dict) else None
+    if not isinstance(images, list):
+        return ""
+    candidates = []
+    for image in images[:20]:
+        if not isinstance(image, dict):
+            continue
+        value = image.get("url")
+        if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 for c in value):
+            continue
+        try:
+            parsed = urlsplit(value)
+            if (parsed.scheme != "https" or parsed.hostname != "i.scdn.co"
+                    or parsed.port not in (None, 443) or parsed.username or parsed.password
+                    or not parsed.path.startswith("/image/")):
+                continue
+        except ValueError:
+            continue
+        width = image.get("width")
+        width = width if isinstance(width, int) and not isinstance(width, bool) and width > 0 else 0
+        candidates.append((width, value))
+    if not candidates:
+        return ""
+    suitable = sorted((item for item in candidates if item[0] >= 128), key=lambda item: item[0])
+    return suitable[0][1] if suitable else max(candidates, key=lambda item: item[0])[1]
+
+
 def request_json(url, token=None, form=None):
-    headers = {"Accept": "application/json", "User-Agent": "DJList-local/0.2"}
+    headers = {"Accept": "application/json", "User-Agent": "DJList-local/0.3"}
     if token:
         headers["Authorization"] = "Bearer " + token
     body = urlencode(form).encode("ascii") if form is not None else None
@@ -177,12 +206,14 @@ class SpotifyClient:
                 if track.get("type") != "track" or not track.get("id") or not track.get("name"):
                     unknown += 1
                     continue
-                album = track.get("album") or {}
+                album = track.get("album") if isinstance(track.get("album"), dict) else {}
                 seconds = round(track.get("duration_ms", 0) / 1000)
                 tracks.append({
                     "spotify_id": (track.get("linked_from") or {}).get("id") or track["id"],
                     "spotify_current_id": track["id"], "artists": "; ".join(a.get("name", "") for a in track.get("artists", [])),
                     "title_and_version": track["name"], "album": album.get("name", ""),
+                    "artwork_url": spotify_artwork(album), "release_date": album.get("release_date", ""),
+                    "explicit": track.get("explicit") if isinstance(track.get("explicit"), bool) else None,
                     "duration": "%d:%02d" % divmod(seconds, 60), "duration_ms": track.get("duration_ms", 0),
                     "isrc": (track.get("external_ids") or {}).get("isrc", ""),
                     "spotify_url": "https://open.spotify.com/track/" + track["id"],

@@ -39,6 +39,7 @@ class Fixture(unittest.TestCase):
         self.identity = self.application.state()["tracks"][0]["id"]
 
     def tearDown(self):
+        self.application.close()
         self.temp.cleanup()
 
     def current(self):
@@ -136,6 +137,33 @@ class AppCase(Fixture):
         self.assertFalse(row["file_available"])
         self.assertEqual(row["local_file"], saved_path)
         self.assertEqual(self.application.state()["settings"]["rekordbox_db"], str(self.master))
+
+    def test_partial_scan_warning_survives_restart_and_failed_refresh(self):
+        self.make_audio()
+        self.application.scan()
+
+        def partial_walk(root, followlinks=False, onerror=None):
+            onerror(PermissionError("Test folder could not be read"))
+            return iter(())
+
+        with patch("app.os.walk", side_effect=partial_walk):
+            scanned = self.application.scan()
+        self.assertEqual(scanned["skipped"], 1)
+        library = self.application.state()["library"]
+        self.assertEqual(library["media_skipped"], 1)
+        self.assertTrue(library["media_refreshed_at"])
+        with self.application.store.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM files").fetchone()[0], 1)
+        self.music.rename(self.root / "Disconnected")
+        with self.assertRaises(AppError):
+            self.application.scan()
+        fresh = Application(self.root / "data")
+        try:
+            restored = fresh.state()["library"]
+            self.assertEqual(restored["media_skipped"], 1)
+            self.assertEqual(restored["media_refreshed_at"], library["media_refreshed_at"])
+        finally:
+            fresh.close()
 
     def test_link_rejects_outside_root_and_symlinks(self):
         outside = self.root / "outside.mp3"

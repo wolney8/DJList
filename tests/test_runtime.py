@@ -35,6 +35,7 @@ class RuntimeTests(unittest.TestCase):
         self.app = Application(self.root / "data", web_dir=self.web)
 
     def tearDown(self):
+        self.app.close()
         self.temp.cleanup()
 
     def request(self, path="/api/health", headers=None, application=None, method="GET", payload=None):

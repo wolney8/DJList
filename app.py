@@ -11,7 +11,6 @@ import argparse
 from contextlib import contextmanager
 import csv
 from datetime import datetime, timezone
-import difflib
 import hashlib
 import html
 from http.client import HTTPConnection, HTTPException
@@ -29,17 +28,18 @@ import sys
 import threading
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 import webbrowser
-import xml.etree.ElementTree as ET
 
 from spotify_api import AppError, SpotifyClient, begin_authorization, callback_code, exchange_code, parse_source
 from catalog import CatalogClient
+from enrichment import StoreLookupQueue
+from library_inventory import LibraryInventory
 
-VERSION = "0.2.0"
-API_VERSION = 2
+VERSION = "0.3.0"
+API_VERSION = 3
 DEFAULTS = {
     "spotify_client_id": "",
     "playlist_url": "", "music_root": "~/Music/DJ Music",
-    "rekordbox_db": "",
+    "rekordbox_db": "", "rekordbox_xml": "", "auto_store_lookup": True,
 }
 MANUAL = {"owned": False, "tags": "", "musical_key": "", "bpm": "", "energy": "",
           "purchase_url": "", "local_file": "", "cue_notes": "", "notes": "", "prep_status": "wishlist"}
@@ -189,7 +189,8 @@ class Store:
                     musical_key TEXT NOT NULL DEFAULT '', bpm TEXT NOT NULL DEFAULT '',
                     cue_count INTEGER NOT NULL DEFAULT 0, origin TEXT NOT NULL DEFAULT 'scan');
             """)
-            for key, value in {**DEFAULTS, "mode": "real", "source_id": ""}.items():
+            for key, value in {**DEFAULTS, "mode": "real", "source_id": "", "last_media_refresh": None,
+                               "last_media_skipped": 0}.items():
                 db.execute("INSERT OR IGNORE INTO settings VALUES (?,?)", (key, json.dumps(value)))
         try:
             self.path.chmod(0o600)
@@ -295,12 +296,17 @@ class Application:
         self.pending = None
         self.last_auth_error = ""
         self.auth_lock = threading.RLock()
-        self.work_lock = threading.Lock()
+        self.work_lock = threading.RLock()
         self.catalog = CatalogClient()
         self.app_dir = Path(__file__).resolve().parent
         self.web = Path(web_dir) if web_dir is not None else self.app_dir / "web"
         self.assets, self.build_id = snapshot_web_assets(self.web)
         self.started_at = now()
+        self.library = LibraryInventory(self.store)
+        self.lookup = StoreLookupQueue(self.store, lambda query, reference, force=False: self.catalog.search(query, reference, force=force))
+
+    def close(self):
+        self.lookup.close()
 
     def runtime(self):
         return {"version": VERSION, "api_version": API_VERSION, "build_id": self.build_id,
@@ -324,8 +330,12 @@ class Application:
     def state(self):
         settings = self.store.settings()
         namespace = settings["mode"]
-        tracks = self.store.rows(namespace)
+        tracks = self.lookup.attach(self.store.rows(namespace), namespace)
         root = Path(settings["music_root"]).expanduser()
+        library = self.library.status(settings["music_root"]) if namespace == "real" else {"entry_count": 0, "demo": True}
+        library["media_refreshed_at"] = settings.get("last_media_refresh") if namespace == "real" else None
+        library["media_skipped"] = settings.get("last_media_skipped", 0) if namespace == "real" else 0
+        suggestions = self.library.matches(tracks, settings["music_root"]) if namespace == "real" else []
         with self.auth_lock:
             connected = bool(self.tokens and self.tokens.get("access_token"))
         return {"settings": {key: settings[key] for key in DEFAULTS}, "tracks": tracks,
@@ -337,19 +347,35 @@ class Application:
                                "last_error": self.last_auth_error},
                 "drive": {"available": root.is_dir(), "music_root": str(root),
                           "rekordbox_db_exists": bool(settings["rekordbox_db"] and Path(settings["rekordbox_db"]).expanduser().is_file())},
+                "library": library, "suggestions": suggestions,
+                "store_job": self.lookup.status() if namespace == "real" else StoreLookupQueue._idle(),
                 "mode": namespace, "csrf_token": self.csrf_token, "version": VERSION,
                 "api_version": API_VERSION, "runtime": self.runtime(),
                 "capabilities": {"spotify_sync": True, "file_scan": True, "rekordbox_xml_import": True,
                                  "provider_search": True,
                                  "catalog_search": True,
+                                 "automatic_store_lookup": True, "library_review": True, "library_refresh": True,
                                  "preview_audio": "assets/download-on-itunes.svg" in self.assets,
                                  "cue_generation": False, "rekordbox_xml_export": False, "file_moves": False}}
 
     def change_settings(self, updates):
+        if not self.work_lock.acquire(blocking=False):
+            raise AppError("A refresh or scan is running. Wait before changing settings.", 409)
+        try:
+            return self._change_settings(updates)
+        finally:
+            self.work_lock.release()
+
+    def _change_settings(self, updates):
         if not isinstance(updates, dict) or set(updates) - set(DEFAULTS):
             raise AppError("Only the displayed settings can be changed.")
         clean = {}
         for key, value in updates.items():
+            if key == "auto_store_lookup":
+                if not isinstance(value, bool):
+                    raise AppError("Automatic store lookup must be checked or unchecked.")
+                clean[key] = value
+                continue
             if not isinstance(value, str) or len(value) > 4096 or "\x00" in value:
                 raise AppError("A setting contains an invalid value.")
             clean[key] = value.strip()
@@ -361,14 +387,20 @@ class Application:
             if old["source_id"] and source != old["source_id"]:
                 raise AppError("This collection is linked to another playlist. Keep its original playlist link.", 409)
             clean["playlist_url"] = url
-        for key in ("music_root", "rekordbox_db"):
+        for key in ("music_root", "rekordbox_db", "rekordbox_xml"):
             if key in clean:
-                if key == "rekordbox_db" and not clean[key]:
+                if key in ("rekordbox_db", "rekordbox_xml") and not clean[key]:
                     continue
                 if not clean[key] or not Path(clean[key]).expanduser().is_absolute():
                     raise AppError("Use an absolute folder/file path for " + key.replace("_", " ") + ".")
                 clean[key] = str(Path(clean[key]).expanduser())
+                if key == "rekordbox_xml" and Path(clean[key]).suffix.lower() != ".xml":
+                    raise AppError("Choose the path to a Rekordbox .xml export.")
         self.store.put_settings(clean)
+        if clean.get("music_root", old["music_root"]) != old["music_root"]:
+            self.library.invalidate()
+        if clean.get("auto_store_lookup") is False:
+            self.lookup.cancel()
         if clean.get("spotify_client_id", old["spotify_client_id"]) != old["spotify_client_id"]:
             with self.auth_lock:
                 self.tokens, self.pending, self.token_client_id = None, None, None
@@ -419,13 +451,26 @@ class Application:
             current = self.store.settings()
             if current["playlist_url"] != settings["playlist_url"] or current["spotify_client_id"] != settings["spotify_client_id"] or current["mode"] != "real":
                 raise AppError("Settings changed during refresh. Please refresh again.", 409)
-            return self.store.upsert(tracks, source, unknown=unknown)
+            result = self.store.upsert(tracks, source, unknown=unknown)
+            if self.store.settings()["auto_store_lookup"]:
+                try:
+                    queued = self.lookup.enqueue()
+                    result["store_lookup_queued"] = queued["queued"]
+                    result["store_job"] = queued["job"]
+                except AppError as error:
+                    # Spotify's successful merge must not be reported as a failed
+                    # sync merely because an earlier catalogue job is stopping.
+                    result["store_lookup_queued"] = 0
+                    result["store_lookup_error"] = str(error)
+            return result
         finally:
             self.work_lock.release()
 
     def demo(self, enabled):
         if not isinstance(enabled, bool):
             raise AppError("Choose whether to enter or leave the demo.")
+        if enabled:
+            self.lookup.cancel()
         if enabled and not self.store.rows("demo"):
             examples = [
                 ("Night Window", "Example Artist", "Original Mix"),
@@ -484,6 +529,7 @@ class Application:
                     raise AppError("Use an http or https purchase link.")
             if key == "local_file" and value and namespace == "real":
                 value = str(self.checked_file(value))
+                self.library.prepare_link(value, self.store.settings()["music_root"])
             clean[key] = value
         saved = self.store.patch(identity, namespace, clean,
                                  confirmed_file=namespace == "real" and bool(clean.get("local_file")))
@@ -494,42 +540,13 @@ class Application:
         if self.namespace() != "real":
             raise AppError("Real files can only be linked in your real collection.", 409)
         file = self.checked_file(path)
+        self.library.prepare_link(str(file), self.store.settings()["music_root"])
         saved = self.store.patch(identity, "real", {"local_file": str(file)}, confirmed_file=True)
         return {"linked": True, "path": str(file), "prep_status": saved["prep_status"],
                 "musical_key": saved["musical_key"], "bpm": saved["bpm"]}
 
     def suggestions(self):
-        root = str(Path(self.store.settings()["music_root"]).expanduser().resolve())
-        with self.store.connect() as db:
-            files = [dict(row) for row in db.execute("SELECT * FROM files WHERE root=?", (root,))]
-        tokens = {}
-        for index, file in enumerate(files):
-            text = normalise(file["title"] or Path(file["path"]).stem)
-            for token in set(text.split()):
-                if len(token) > 2:
-                    tokens.setdefault(token, set()).add(index)
-        result = []
-        for track in self.store.rows("real"):
-            if track["file_available"]:
-                continue
-            title = normalise(track["title_and_version"])
-            indices = set()
-            for token in title.split():
-                if len(token) > 2:
-                    indices.update(tokens.get(token, set()))
-            candidates = []
-            for index in sorted(indices)[:300]:
-                file = files[index]
-                target = normalise(file["title"] or Path(file["path"]).stem)
-                ratio = max(difflib.SequenceMatcher(None, title, target).ratio(),
-                            difflib.SequenceMatcher(None, normalise(track["artists"] + " " + track["title_and_version"]), target).ratio())
-                if ratio >= .48:
-                    candidates.append({"path": file["path"], "name": Path(file["path"]).name,
-                                       "score": round(ratio * 100), "key": file["musical_key"], "bpm": file["bpm"],
-                                       "cue_count": file["cue_count"], "match_status": "Needs your confirmation"})
-            if candidates:
-                result.append({"track_id": track["id"], "candidates": sorted(candidates, key=lambda c: c["score"], reverse=True)[:5]})
-        return result
+        return self.library.matches(self.store.rows("real"), self.store.settings()["music_root"])
 
     def scan(self):
         if self.namespace() != "real":
@@ -568,53 +585,84 @@ class Application:
                     db.execute("INSERT INTO files(path,root,size,mtime,title) VALUES (?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET root=excluded.root,size=excluded.size,mtime=excluded.mtime", (path, root_name, size, mtime, title))
                 for missing in (existing - seen if not scan_errors and not skipped else set()):
                     db.execute("DELETE FROM files WHERE path=?", (missing,))
+                db.execute("INSERT OR REPLACE INTO settings VALUES ('last_media_refresh', ?)", (json.dumps(now()),))
+                db.execute("INSERT OR REPLACE INTO settings VALUES ('last_media_skipped', ?)", (json.dumps(skipped + len(scan_errors)),))
+            self.library.invalidate()
             return {"indexed": len(files), "skipped": skipped + len(scan_errors), "suggestions": self.suggestions()}
+        finally:
+            self.library.invalidate()
+            self.work_lock.release()
+
+    def import_xml(self, xml, source_name="Uploaded XML"):
+        if self.namespace() != "real":
+            raise AppError("Leave the demo to import your Rekordbox inventory.", 409)
+        if not self.work_lock.acquire(blocking=False):
+            raise AppError("Another refresh or scan is running. Please wait.", 409)
+        try:
+            result = self.library.import_xml(xml, self.store.settings()["music_root"], source_name=source_name)
+            return {**result, "suggestions": self.suggestions()}
         finally:
             self.work_lock.release()
 
-    def import_xml(self, xml):
+    def refresh_libraries(self, media=True, xml=True):
+        if not isinstance(media, bool) or not isinstance(xml, bool) or not (media or xml):
+            raise AppError("Choose the media folder, Rekordbox XML, or both to refresh.")
         if self.namespace() != "real":
-            raise AppError("Leave the demo to import your Rekordbox inventory.", 409)
-        if not isinstance(xml, str) or len(xml.encode("utf-8")) > MAX_BODY - 1000:
-            raise AppError("Choose a Rekordbox XML export smaller than 20 MB.", 413)
-        if "<!DOCTYPE" in xml.upper() or "<!ENTITY" in xml.upper():
-            raise AppError("This XML contains unsupported declarations.")
+            raise AppError("Leave the demo before refreshing your libraries.", 409)
+        if not self.work_lock.acquire(blocking=False):
+            raise AppError("Another refresh or scan is running. Please wait.", 409)
         try:
-            document = ET.fromstring(xml)
-        except ET.ParseError:
-            raise AppError("The selected file is not valid XML.") from None
-        if document.tag != "DJ_PLAYLISTS" or document.find("COLLECTION") is None:
-            raise AppError("Choose a Rekordbox XML collection export.")
-        root = Path(self.store.settings()["music_root"]).expanduser()
-        if not root.is_dir():
-            raise AppError("Connect your music drive before matching the XML inventory.", 409)
-        root = root.resolve()
-        indexed, skipped, files = 0, 0, []
-        for item in document.find("COLLECTION").findall("TRACK"):
-            location = urlsplit(item.get("Location", ""))
-            if location.scheme != "file" or location.netloc not in ("", "localhost"):
-                skipped += 1
-                continue
-            path = unquote(location.path)
-            if os.name == "nt" and re.match(r"^/[A-Za-z]:/", path):
-                path = path[1:]
-            try:
-                resolved = self.checked_file(path)
-                st = resolved.stat()
-            except (AppError, OSError):
-                skipped += 1
-                continue
-            files.append((str(resolved), str(root), st.st_size, st.st_mtime,
-                          item.get("Name", resolved.stem), item.get("Artist", ""),
-                          item.get("Tonality", ""), item.get("AverageBpm", ""),
-                          len(item.findall("POSITION_MARK"))))
-            if len(files) > 50000:
-                raise AppError("This inventory is too large. Export a smaller selection.", 413)
-        with self.store.connect() as db:
-            for row in files:
-                db.execute("INSERT INTO files(path,root,size,mtime,title,artist,musical_key,bpm,cue_count,origin) VALUES (?,?,?,?,?,?,?,?,?,'rekordbox_xml') ON CONFLICT(path) DO UPDATE SET root=excluded.root,size=excluded.size,mtime=excluded.mtime,title=excluded.title,artist=excluded.artist,musical_key=excluded.musical_key,bpm=excluded.bpm,cue_count=excluded.cue_count,origin='rekordbox_xml'", row)
-                indexed += 1
-        return {"indexed": indexed, "skipped": skipped, "suggestions": self.suggestions()}
+            result = {"media": None, "xml": None, "errors": []}
+            if media:
+                try:
+                    result["media"] = self.scan()
+                    if result["media"]["skipped"]:
+                        result["errors"].append({"source": "media", "message":
+                            "Some folders or files could not be read. Previous inventory entries were kept; check the media scan before buying duplicates."})
+                except (AppError, OSError) as error:
+                    result["errors"].append({"source": "media", "message": str(error)})
+            if xml:
+                try:
+                    settings = self.store.settings()
+                    if not settings["rekordbox_xml"]:
+                        raise AppError("Set your Rekordbox XML path in Settings for one-click refresh, or choose Import XML.")
+                    result["xml"] = self.library.refresh_xml(settings["rekordbox_xml"], settings["music_root"])
+                except (AppError, OSError) as error:
+                    result["errors"].append({"source": "xml", "message": str(error)})
+            settings = self.store.settings()
+            self.library.invalidate()
+            result["library"] = self.library.status(settings["music_root"])
+            result["library"]["media_refreshed_at"] = settings.get("last_media_refresh")
+            result["library"]["media_skipped"] = settings.get("last_media_skipped", 0)
+            result["suggestions"] = self.suggestions()
+            result["partial"] = bool(result["errors"])
+            return result
+        finally:
+            self.work_lock.release()
+
+    def library_review(self, parameters):
+        if self.namespace() != "real":
+            raise AppError("Leave the demo to review your real libraries.", 409)
+        if set(parameters) - {"q", "page", "page_size", "filter"} or any(len(value) != 1 for value in parameters.values()):
+            raise AppError("Choose one value for each library filter.")
+        query = parameters.get("q", [""])[0].strip()
+        if len(query) > 500 or any(ord(char) < 32 or ord(char) == 127 for char in query):
+            raise AppError("Keep the library search to 500 characters without control characters.")
+        try:
+            page = int(parameters.get("page", ["1"])[0])
+            size = int(parameters.get("page_size", ["25"])[0])
+        except (ValueError, TypeError):
+            raise AppError("Choose a valid library page and page size.") from None
+        if page < 1 or page > 50000 or size < 1 or size > 100:
+            raise AppError("Choose a positive page and a page size from 1 to 100.")
+        filter_name = parameters.get("filter", ["all"])[0]
+        if filter_name not in ("all", "missing", "duplicates"):
+            raise AppError("Choose a valid library filter.")
+        return self.library.review(self.store.rows("real"), self.store.settings()["music_root"],
+                                   query=query, page=page, page_size=size, filter_name=filter_name)
+
+    def refresh_stores(self, force=False, identity=None):
+        return self.lookup.enqueue([identity] if identity is not None else None, force=force)
 
     def export_csv(self):
         fields = ["artists", "title_and_version", *MANUAL.keys(), "spotify_id", "spotify_url", "in_source", "first_seen", "last_seen"]
@@ -650,7 +698,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-DJList-Version", VERSION)
         self.send_header("X-DJList-Build", self.app.build_id)
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src https://audio-ssl.itunes.apple.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://i.scdn.co https://is1-ssl.mzstatic.com https://is2-ssl.mzstatic.com https://is3-ssl.mzstatic.com https://is4-ssl.mzstatic.com https://is5-ssl.mzstatic.com; media-src https://audio-ssl.itunes.apple.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         for name, value in (extra or {}).items():
             self.send_header(name, value)
         self.end_headers()
@@ -713,6 +761,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_data(200, self.app.health())
                 if path == "/api/state":
                     return self.send_data(200, self.app.state())
+                if path == "/api/store-job":
+                    return self.send_data(200, self.app.lookup.status() if self.app.namespace() == "real" else StoreLookupQueue._idle())
+                if path == "/api/library-review":
+                    try:
+                        parameters = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=8)
+                    except ValueError:
+                        raise AppError("Choose valid library filters.") from None
+                    return self.send_data(200, self.app.library_review(parameters))
                 if path == "/api/provider-search":
                     try:
                         parameters = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=5)
@@ -742,6 +798,14 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.app.connect_spotify()
             elif self.command == "POST" and path == "/api/sync":
                 result = self.app.sync()
+            elif self.command == "POST" and path == "/api/store-refresh":
+                if set(data) - {"force"}:
+                    raise AppError("Only the store refresh option is accepted.")
+                result = self.app.refresh_stores(force=data.get("force", False))
+            elif self.command == "POST" and path == "/api/store-cancel":
+                if data:
+                    raise AppError("Cancel does not accept additional settings.")
+                result = self.app.lookup.cancel()
             elif self.command == "POST" and path == "/api/catalog-search":
                 if set(data) - {"query", "reference"}:
                     raise AppError("Only a search query and reference track are accepted.")
@@ -750,8 +814,22 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.app.demo(data.get("enabled", True))
             elif self.command == "POST" and path == "/api/scan":
                 result = self.app.scan()
+            elif self.command == "POST" and path == "/api/refresh-libraries":
+                if set(data) - {"media", "xml"}:
+                    raise AppError("Choose only which libraries to refresh.")
+                result = self.app.refresh_libraries(media=data.get("media", True), xml=data.get("xml", True))
+            elif self.command == "POST" and path == "/api/refresh-rekordbox-xml":
+                if data:
+                    raise AppError("XML refresh uses the file path saved in Settings.")
+                result = self.app.refresh_libraries(media=False, xml=True)
             elif self.command == "POST" and path == "/api/import-rekordbox-xml":
-                result = self.app.import_xml(data.get("xml"))
+                if set(data) - {"xml", "filename"}:
+                    raise AppError("Choose one XML file to import.")
+                result = self.app.import_xml(data.get("xml"), source_name=data.get("filename", "Uploaded XML"))
+            elif re.fullmatch(r"/api/tracks/\d+/refresh-store", path) and self.command == "POST":
+                if data:
+                    raise AppError("This action refreshes the selected track's store result.")
+                result = self.app.refresh_stores(force=True, identity=int(path.split("/")[3]))
             elif re.fullmatch(r"/api/tracks/\d+/link", path) and self.command == "POST":
                 result = self.app.link(int(path.split("/")[3]), data.get("path"))
             elif re.fullmatch(r"/api/tracks/\d+", path) and self.command == "PATCH":
@@ -816,6 +894,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("\nDJList stopped.")
     finally:
+        app.close()
         server.server_close()
     return 0
 

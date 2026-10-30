@@ -125,6 +125,20 @@ def safe_preview_url(value):
     return ""
 
 
+def safe_artwork_url(value):
+    if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 for c in value):
+        return ""
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme == "https" and parsed.hostname in
+                {"is%d-ssl.mzstatic.com" % number for number in range(1, 6)}
+                and parsed.port in (None, 443) and not parsed.username and not parsed.password):
+            return value
+    except ValueError:
+        pass
+    return ""
+
+
 def price_for(item):
     amount, currency = item.get("trackPrice"), item.get("currency")
     if (isinstance(amount, bool) or not isinstance(amount, (int, float))
@@ -149,10 +163,16 @@ def make_offer(item, timestamp):
     duration = item.get("trackTimeMillis")
     if isinstance(duration, bool) or not isinstance(duration, int) or not 0 < duration <= 36_000_000:
         duration = None
+    explicit = item.get("trackExplicitness")
+    explicit = {"explicit": True, "notExplicit": False, "cleaned": False}.get(explicit) if isinstance(explicit, str) else None
     return {"id": "itunes:%d" % identity, "provider": "itunes", "provider_name": "iTunes Store",
             "title": title[:1000], "artist": artist[:1000],
             "album": str(item.get("collectionName") or "")[:1000],
             "duration_ms": duration, "genre": str(item.get("primaryGenreName") or "")[:200],
+            "artwork_url": safe_artwork_url(item.get("artworkUrl100")) or safe_artwork_url(item.get("artworkUrl60")),
+            "release_date": str(item.get("releaseDate") or "")[:40],
+            "explicit": explicit,
+            "bpm": None, "musical_key": "",  # Not supplied by this catalogue API.
             "price": price_for(item), "purchase_url": url,
             "preview_url": safe_preview_url(item.get("previewUrl")),
             "preview_attribution": PREVIEW_ATTRIBUTION, "checked_at": timestamp}
@@ -208,7 +228,7 @@ def compare_offer(offer, reference):
 def fetch_catalogue(query):
     params = {"term": query, "country": STOREFRONT, "media": "music", "entity": "song", "limit": 40}
     request = Request(API_URL + "?" + urlencode(params),
-                      headers={"Accept": "application/json", "User-Agent": "DJList-local/0.2"})
+                      headers={"Accept": "application/json", "User-Agent": "DJList-local/0.3"})
     with OPENER.open(request, timeout=8) as response:
         body = response.read(MAX_RESPONSE_BYTES + 1)
     if len(body) > MAX_RESPONSE_BYTES:
@@ -246,9 +266,11 @@ class CatalogClient:
         self.cache[query] = {"time": current, "offers": copy.deepcopy(offers), "checked_at": timestamp}
         return offers, timestamp, False
 
-    def search(self, query, reference=None):
+    def search(self, query, reference=None, force=False):
         query = clean_text(query, "search", required=True)
         reference = validate_reference(reference)
+        if not isinstance(force, bool):
+            raise AppError("Choose whether to refresh this catalogue search.")
         response = {"provider": "itunes", "storefront": STOREFRONT, "query": query,
                     "checked_at": None, "cached": False, "queries": [], "offers": [],
                     "notice": NOTICE, "errors": []}
@@ -257,7 +279,11 @@ class CatalogClient:
             return response
         try:
             candidates, cache_flags = {}, []
-            for variant in query_variants(query, reference)[:2]:
+            variants = query_variants(query, reference)[:2]
+            if force:
+                for variant in variants:
+                    self.cache.pop(variant, None)
+            for variant in variants:
                 response["queries"].append(variant)
                 try:
                     offers, timestamp, cached = self._lookup(variant)

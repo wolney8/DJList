@@ -28,8 +28,21 @@ Source and terms: https://performance-partners.apple.com/search-api
 Preview audio is streamed for promoting the corresponding iTunes content. It
 is displayed with the same-record link and approved badge and the attribution
 **provided courtesy of iTunes**. It is not downloaded, saved, cached, converted
-or offered as DJ audio by this application. The application caches catalogue
-metadata only, for five minutes, to limit repeated API requests.
+or offered as DJ audio by this application. Search responses use a five-minute
+in-memory metadata cache. Automated lookup results, including their source and
+check time, are retained in the user's local DJList database. Explicit per-track
+refresh bypasses the search cache while respecting the provider rate limit.
 
 Catalogue information and prices are supplied by the provider and may change.
 The store page and checkout govern the actual offer.
+
+## Spotify metadata and artwork
+
+Source and display guidance:
+https://developer.spotify.com/documentation/design
+
+Playlist artwork is loaded from Spotify's image host, displayed without cropping
+or overlays, and accompanied by the Spotify mark and a link to that track. Image
+bytes are not downloaded into the music library or bundled with the application.
+Spotify retains rights in its marks; artwork belongs to its respective owners.
+Missing or failed artwork uses DJList's music-note icon with a stable colour.

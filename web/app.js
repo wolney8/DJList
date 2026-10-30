@@ -2,12 +2,14 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const UI_VERSION = "0.2.0";
-const API_VERSION = 2;
+const UI_VERSION = "0.3.0";
+const API_VERSION = 3;
+const trackModel = window.DJListModel;
 const RESTART_MESSAGE = "Stop DJList in its Terminal window (Control+C), then open the updated launcher and reload this page.";
 const ITUNES_BADGE_PATH = "/assets/download-on-itunes.svg";
 const ui = {data: null, tracks: [], filter: "all", query: "", sort: "newest", page: 1,
-  pageSize: 40, csrf: "", selected: null, suggestions: new Map(), busy: new Set(), runtimeCompatible: false};
+  pageSize: 25, storeFilter: "all", libraryFilter: "all", csrf: "", selected: null, suggestions: new Map(), busy: new Set(), runtimeCompatible: false, actionTrack: null, actionOpener: null, pollTimer: null, pollBusy: false, pendingRefresh: false, jobSignature: "", refreshRequest: 0};
+const libraryUI = {page: 1, pageSize: 25, pages: 1, query: "", filter: "all", requestId: 0, opener: null};
 const providerUI = {requestId: 0, returnToTrack: false, opener: null,
   trackScroll: 0, focusPurchase: false, lastQuery: "", reference: null, audio: null,
   previewButton: null, previewPanel: null, previewId: null, previewRequest: 0,
@@ -81,15 +83,18 @@ function normalize(track, index) {
     local_file: track.local_file || "", _order: index};
 }
 async function refresh() {
+  const request = ++ui.refreshRequest;
   const data = await api("/api/state");
-  ui.data = data; ui.csrf = data.csrf_token || ui.csrf;
+  if (request !== ui.refreshRequest) return ui.data;
+  ui.data = data; ui.pendingRefresh = false; ui.csrf = data.csrf_token || ui.csrf;
   ui.runtimeCompatible = data.version === UI_VERSION && Number(data.api_version) === API_VERSION;
   $("#app-version").textContent = `v${data.version || "unknown"}`;
   $("#app-version").title = `Interface ${UI_VERSION}; running app ${data.version || "unknown"}`;
   $("#runtime-warning").hidden = ui.runtimeCompatible;
   $("#runtime-version-detail").textContent = ui.runtimeCompatible ? "" : `This page is version ${UI_VERSION}, but the running app is ${data.version || "an older version"}.`;
-  ui.tracks = (data.tracks || []).map(normalize);
-  render(); return data;
+  ui.suggestions = new Map((data.suggestions || []).map(entry => [String(entry.track_id), entry.candidates || []]));
+  ui.tracks = (data.tracks || []).map((track, index) => ({...normalize(track, index), _candidate_count: (ui.suggestions.get(String(track.id)) || []).length}));
+  render(); scheduleStorePoll(); return data;
 }
 function render() {
   $("#loading-state").hidden = true;
@@ -117,73 +122,79 @@ function render() {
     else { button.classList.toggle("selected", active); button.setAttribute("aria-pressed", String(active)); }
   });
   $("#sync-info").textContent = demo ? "Demo edits are saved separately from your real collection." : "Spotify supplies the list. Purchased files stay on your drive.";
+  renderLibrarySources(); renderStoreJob(ui.data.store_job || {});
   updateControls(); renderTracks();
 }
 function updateControls() {
   if (!ui.data) return;
   const demo = ui.data.mode === "demo";
+  const compatible = ui.runtimeCompatible;
   const connected = Boolean(ui.data.connection?.connected);
-  const sync = $("#sync-button");
-  if (!ui.busy.has(sync)) sync.disabled = demo || !ui.runtimeCompatible;
-  $("span", sync).textContent = connected ? "Refresh Spotify" : "Connect Spotify";
-  sync.title = demo ? "Leave the demo to refresh your Spotify playlist" : "";
-  const scan = $("#scan-button");
-  if (!ui.busy.has(scan)) scan.disabled = demo || !ui.data.drive?.available || !ui.runtimeCompatible;
-  scan.title = demo ? "Folder scanning is available in your real collection" : !ui.data.drive?.available ? "Connect your drive or choose an available music folder in Settings" : "Read your music folder and suggest file matches";
-  $("#import-button").disabled = demo || !ui.runtimeCompatible;
-  for (const id of ["#find-downloads-button", "#detail-find-downloads", "#demo-start", "#leave-demo", "#authorize-button"]) {
-    if (!ui.busy.has($(id))) $(id).disabled = !ui.runtimeCompatible;
-  }
+  const setDisabled = (id, disabled) => { const button = $(id); if (button && !ui.busy.has(button)) button.disabled = disabled; };
+  setDisabled("#sync-button", demo || !compatible);
+  $("span", $("#sync-button")).textContent = connected ? "Refresh Spotify" : "Connect Spotify";
+  $("#sync-button").title = demo ? "Leave the demo to refresh your Spotify playlist" : "";
+  setDisabled("#scan-button", demo || !ui.data.drive?.available || !compatible);
+  $("#scan-button").title = !ui.data.drive?.available ? "Connect your drive or choose an available music folder in Settings" : "Read your music folder again and check for existing copies";
+  setDisabled("#refresh-xml-button", demo || !compatible || !ui.data.settings?.rekordbox_xml);
+  $("#refresh-xml-button").title = ui.data.settings?.rekordbox_xml ? "Read the XML file saved in Settings" : "Save your Rekordbox XML file path in Settings first";
+  setDisabled("#review-library-button", demo || !compatible);
+  setDisabled("#import-button", demo || !compatible);
+  setDisabled("#refresh-store-button", demo || !compatible || !ui.tracks.length || Boolean(ui.data.store_job?.running));
+  setDisabled("#cancel-store-job", !compatible || !ui.data.store_job?.running || Boolean(ui.data.store_job?.cancel_requested));
+  for (const id of ["#find-downloads-button", "#detail-find-downloads", "#demo-start", "#leave-demo", "#authorize-button"]) setDisabled(id, !compatible);
   for (const button of $$("#settings-form button[type=submit], #track-form button[type=submit]")) {
-    if (!ui.busy.has(button)) button.disabled = !ui.runtimeCompatible;
+    if (!ui.busy.has(button)) button.disabled = !compatible;
   }
 }
-function filteredTracks() {
-  const query = ui.query.trim().toLocaleLowerCase();
-  const result = ui.tracks.filter(track => {
-    if (ui.filter === "wanted" && track.owned) return false;
-    if (ui.filter === "owned" && !track.owned) return false;
-    if (ui.filter === "linked" && !track.local_file) return false;
-    return !query || [track.title_and_version, track.artists, track.tags, track.album, track.musical_key].join(" ").toLocaleLowerCase().includes(query);
-  });
-  if (ui.sort === "artist") result.sort((a, b) => a.artists.localeCompare(b.artists));
-  else if (ui.sort === "title") result.sort((a, b) => a.title_and_version.localeCompare(b.title_and_version));
-  else result.sort((a, b) => b._order - a._order);
-  return result;
-}
+function filteredTracks() { return trackModel.select(ui.tracks, ui); }
 function setFilter(filter) { ui.filter = filter; ui.page = 1; if (ui.data) render(); }
 function renderTracks() {
   const focused = document.activeElement;
   const focusId = focused?.dataset?.trackId;
   const focusKind = focused?.dataset?.kind;
   const tracks = filteredTracks();
-  const pages = Math.max(1, Math.ceil(tracks.length / ui.pageSize));
-  ui.page = Math.min(ui.page, pages);
-  const start = (ui.page - 1) * ui.pageSize;
+  const page = trackModel.paginate(tracks, ui.page, ui.pageSize);
+  ui.page = page.page;
   const rows = document.createDocumentFragment();
-  for (const track of tracks.slice(start, start + ui.pageSize)) rows.append(trackRow(track));
+  for (const track of page.items) rows.append(trackRow(track));
   $("#track-rows").replaceChildren(rows);
   $("#table-scroll").hidden = !tracks.length;
   $("#empty-state").hidden = tracks.length > 0;
   if (!tracks.length) {
-    const searching = Boolean(ui.query.trim());
+    const searching = Boolean(ui.query.trim()) || ui.storeFilter !== "all" || ui.libraryFilter !== "all";
     $("#empty-title").textContent = searching ? "No matching tracks" : ui.filter === "wanted" ? "Nothing on your shopping list" : ui.filter === "owned" ? "Your owned tracks will appear here" : ui.filter === "linked" ? "No audio files linked yet" : "Your track list starts here";
-    $("#empty-description").textContent = searching ? "Try an artist name, a shorter title or a different tag." : ui.filter === "owned" ? "Tick Owned beside a track after you purchase or receive it." : ui.filter === "linked" ? "Scan your music folder or add a local file in track details." : ui.filter === "wanted" ? "Add more tracks to your Spotify playlist, then refresh." : ui.data.connection?.connected ? "Add a track to your playlist, then choose Refresh Spotify." : "Connect Spotify to bring in your playlist, or explore a sample collection.";
+    $("#empty-description").textContent = searching ? "Try a shorter search or clear the filters." : ui.filter === "owned" ? "Tick Owned beside a track after you purchase or receive it." : ui.filter === "linked" ? "Refresh your music folder or add a local file in track details." : ui.filter === "wanted" ? "Add more tracks to your Spotify playlist, then refresh." : ui.data.connection?.connected ? "Add a track to your playlist, then choose Refresh Spotify." : "Connect Spotify to bring in your playlist, or explore a sample collection.";
   }
-  $("#result-count").textContent = tracks.length ? `${start + 1}–${Math.min(start + ui.pageSize, tracks.length)} of ${tracks.length.toLocaleString()} tracks` : "No tracks to show";
-  $("#page-number").textContent = `${ui.page} / ${pages}`;
-  $("#previous-page").disabled = ui.page <= 1; $("#next-page").disabled = ui.page >= pages;
-  if (focusId && focusKind) {
+  $("#result-count").textContent = tracks.length ? `${page.start}–${page.end} of ${page.total.toLocaleString()} tracks` : "No tracks to show";
+  $("#page-number").textContent = `Page ${page.page} of ${page.pages}`;
+  $("#previous-page").disabled = page.page <= 1; $("#next-page").disabled = page.page >= page.pages;
+  if (focusId && focusKind && !$("dialog[open]")) {
     const replacement = $$("[data-track-id]").find(node => node.dataset.trackId === focusId && node.dataset.kind === focusKind);
     (replacement || $("#track-search")).focus({preventScroll: true});
   }
 }
+function trackArtwork(track) {
+  const fallback = el("span", `track-art tone-${trackModel.tone(track)}`);
+  fallback.setAttribute("aria-hidden", "true"); fallback.append(icon("note"));
+  const url = trackModel.artworkURL(track.artwork_url);
+  let spotifyURL = "";
+  try { const link = new URL(track.spotify_url); if (link.protocol === "https:" && link.hostname === "open.spotify.com" && !link.username && !link.password && !link.port) spotifyURL = link.href; } catch { /* A local icon remains available. */ }
+  if (!url || new URL(url).hostname !== "i.scdn.co" || !spotifyURL) return fallback;
+  const link = el("a", "artwork-link");
+  link.href = spotifyURL; link.target = "_blank"; link.rel = "noopener noreferrer";
+  link.setAttribute("aria-label", `Open ${track.title_and_version} on Spotify (new tab)`);
+  const image = document.createElement("img"); image.alt = ""; image.loading = "lazy"; image.decoding = "async"; image.referrerPolicy = "no-referrer";
+  image.addEventListener("error", () => link.replaceWith(fallback), {once: true}); image.src = url;
+  const credit = el("span", "spotify-art-credit", "Spotify"); credit.prepend(icon("spotify"));
+  link.append(image, credit); return link;
+}
+function labelledCell(className, label) { const cell = el("td", className); cell.dataset.label = label; cell.setAttribute("role", "cell"); return cell; }
 function trackRow(track) {
-  const row = el("tr");
-  const ownedCell = el("td");
+  const row = el("tr"); row.setAttribute("role", "row");
+  const ownedCell = labelledCell("owned-cell", "Owned");
   const label = el("label", "owned-check"); const checkbox = document.createElement("input");
-  checkbox.type = "checkbox"; checkbox.checked = track.owned;
-  checkbox.disabled = !ui.runtimeCompatible;
+  checkbox.type = "checkbox"; checkbox.checked = track.owned; checkbox.disabled = !ui.runtimeCompatible;
   checkbox.setAttribute("aria-label", `Owned: ${track.title_and_version} by ${track.artists}`);
   checkbox.dataset.trackId = track.id; checkbox.dataset.kind = "owned";
   checkbox.addEventListener("change", async () => {
@@ -199,50 +210,222 @@ function trackRow(track) {
         (replacement || $("#track-search")).focus({preventScroll: true});
       }
       toast(owned ? "Marked as owned." : "Ownership mark removed.");
-    }
-    catch (error) { checkbox.checked = !owned; checkbox.disabled = false; toast(error.message, true); }
+    } catch (error) { checkbox.checked = !owned; checkbox.disabled = false; toast(error.message, true); }
     finally { document.removeEventListener("focusin", rememberMove); document.removeEventListener("pointerdown", rememberMove); }
   }); label.append(checkbox); ownedCell.append(label); row.append(ownedCell);
-  const titleCell = el("td"); const cell = el("div", "track-cell");
-  const initials = track.artists.split(/[\s;]+/).filter(Boolean).slice(0, 2).map(word => word[0]).join("").toUpperCase();
-  const tone = [...track.artists].reduce((sum, character) => sum + character.codePointAt(0), 0) % 6;
-  const art = el("span", `track-art tone-${tone}`, initials); art.setAttribute("aria-hidden", "true");
+  const titleCell = labelledCell("title-cell", "Track"); const cell = el("div", "track-cell");
   const text = el("div", "track-text"); const title = el("button", "track-title", track.title_and_version);
-  title.type = "button"; title.title = track.title_and_version; title.dataset.trackId = track.id; title.dataset.kind = "title";
+  title.type = "button"; title.dataset.trackId = track.id; title.dataset.kind = "title";
   title.addEventListener("click", () => openTrack(track.id));
   text.append(title, el("div", "track-artist", track.artists));
-  const tags = track.tags.split(";").map(tag => tag.trim()).filter(Boolean);
-  const mobile = el("div", "mobile-track-meta");
-  if (tags[0]) mobile.append(el("span", "tag", tags[0]));
-  const possibleMatch = (ui.suggestions.get(track.id) || []).length > 0;
-  if (track.local_file) mobile.append(el("span", "", track.file_available ? "File linked" : "File unavailable"));
-  else if (possibleMatch) mobile.append(el("span", "", "Possible file match"));
-  if (track.in_source === false) mobile.append(el("span", "", "Off playlist"));
-  if (mobile.childNodes.length) text.append(mobile);
-  cell.append(art, text); titleCell.append(cell); row.append(titleCell);
-  const tagsCell = el("td", "tags-cell"); const tagRow = el("div", "row-tags");
-  tags.slice(0, 2).forEach((tag, index) => { const chip = el("span", `tag${index === 0 ? " tag-accent" : ""}`, tag); chip.title = tag; tagRow.append(chip); });
-  if (tags.length > 2) { const more = el("span", "tag", `+${tags.length - 2}`); more.title = tags.slice(2).join("; "); tagRow.append(more); }
-  if (!tags.length) tagRow.append(el("span", "no-value", "—"));
-  tagsCell.append(tagRow); row.append(tagsCell);
-  const music = el("td", "music-cell"); music.append(el("span", "key-value", track.musical_key || "—"), el("span", "bpm-value", track.bpm ? `${track.bpm} BPM` : "BPM not set")); row.append(music);
-  const file = el("td", "file-cell"); const status = el("span", `file-status${track.local_file ? track.file_available ? " linked" : " missing" : possibleMatch ? " possible" : ""}`);
-  if (track.local_file) status.append(icon(track.file_available ? "check" : "info"));
-  status.append(document.createTextNode(track.local_file ? track.file_available ? "Linked" : "Unavailable" : possibleMatch ? "Review match" : "Not linked")); file.append(status); row.append(file);
-  const edit = el("td", "edit-cell"); const button = el("button", "icon-button"); button.type = "button";
-  button.setAttribute("aria-label", `Edit ${track.title_and_version}`); button.dataset.trackId = track.id; button.dataset.kind = "details";
-  button.append(icon("chevron")); button.addEventListener("click", () => openTrack(track.id)); edit.append(button); row.append(edit);
+  if (track.in_source === false) text.append(el("span", "row-note", "Off playlist"));
+  cell.append(trackArtwork(track), text); titleCell.append(cell); row.append(titleCell);
+  const metadata = labelledCell("metadata-cell", "Tags · key · BPM"); const tagRow = el("div", "row-tags");
+  const tags = trackModel.tags(track);
+  tags.own.slice(0, 3).forEach(tag => tagRow.append(el("span", "tag tag-accent", tag)));
+  if (tags.own.length > 3) { const more = el("button", "tag tag-more", `+${tags.own.length - 3} tags`); more.type = "button"; more.setAttribute("aria-label", `View all tags for ${track.title_and_version}`); more.addEventListener("click", () => openTrack(track.id)); tagRow.append(more); }
+  if (tags.genre) { const genre = el("span", "tag suggested-tag", `${tags.genre} · iTunes`); genre.title = "Genre suggested by the matched shop item"; tagRow.append(genre); }
+  if (!tagRow.childNodes.length) tagRow.append(el("span", "no-value", "No tags"));
+  const music = trackModel.metadata(track); const musicLine = el("div", "row-music");
+  musicLine.append(el("span", "", music.key || "Key unknown"), el("span", "", music.bpm ? `${music.bpm} BPM` : "BPM unknown"));
+  if ((!track.bpm && music.bpm) || (!track.musical_key && music.key)) musicLine.append(el("small", "", "Shop suggestion"));
+  metadata.append(tagRow, musicLine); row.append(metadata);
+  const shop = labelledCell("store-cell", "Shop");
+  const lookup = track.store_lookup || {}; const offer = trackModel.storeOffer(track);
+  const savedURL = safeURL(track.purchase_url); const candidateURL = safeStoreURL(offer?.purchase_url);
+  shop.append(el("span", `lookup-status lookup-${trackModel.status(track)}`, savedURL ? "Saved shop link" : trackModel.statusLabel(track)));
+  if (savedURL || candidateURL) {
+    const link = el("a", "row-store-link", savedURL ? "Open saved link" : displayPrice(offer.price));
+    link.href = savedURL || candidateURL; link.target = "_blank"; link.rel = "noopener noreferrer";
+    link.setAttribute("aria-label", `${savedURL ? "Open saved shop link" : "View candidate on iTunes"} for ${track.title_and_version} (new tab)`);
+    link.append(icon("arrow")); shop.append(link);
+    if (!savedURL) shop.append(el("small", "row-note", "iTunes · check the mix"));
+  } else if (lookup.message) { const note = el("small", "row-note", lookup.message); shop.append(note); }
+  row.append(shop);
+  const file = labelledCell("file-cell", "My library"); const candidates = ui.suggestions.get(track.id) || [];
+  const textStatus = track.local_file ? track.file_available ? "File linked" : "File unavailable" : candidates.length ? "Possible existing copy" : "No linked copy";
+  const status = el("span", `file-status${track.local_file ? track.file_available ? " linked" : " missing" : candidates.length ? " possible" : ""}`, textStatus);
+  file.append(status);
+  if (candidates.length && !track.local_file) {
+    const review = el("button", "row-review-button", `Review ${candidates.length} ${candidates.length === 1 ? "match" : "matches"}`); review.type = "button";
+    review.addEventListener("click", () => { openTrack(track.id); $("#match-list").scrollIntoView({block: "nearest"}); }); file.append(review);
+  }
+  row.append(file);
+  const actions = labelledCell("actions-cell", "Actions"); const button = el("button", "button button-outlined row-actions", "Actions"); button.type = "button";
+  button.setAttribute("aria-label", `Actions for ${track.title_and_version} by ${track.artists}`); button.setAttribute("aria-haspopup", "dialog");
+  button.dataset.trackId = track.id; button.dataset.kind = "actions"; button.addEventListener("click", () => openActions(track, button)); actions.append(button); row.append(actions);
   return row;
 }
+function checkedTime(value) {
+  if (typeof value !== "string" || !value) return "";
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString("en-GB", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : "";
+}
+function renderDetailStore(track) {
+  const section = $("#detail-store-suggestion"); const content = $("#detail-store-content");
+  const lookup = track.store_lookup || {}; const offer = trackModel.storeOffer(track);
+  section.hidden = !offer && !lookup.checked_at && !["queued", "searching", "review", "error", "interrupted"].includes(lookup.status);
+  content.replaceChildren();
+  if (section.hidden) return;
+  content.append(el("p", "", trackModel.statusLabel(track)));
+  if (offer) {
+    content.append(el("strong", "", `${offer.artist || track.artists} · ${offer.title || track.title_and_version}`));
+    const facts = [offer.genre ? `iTunes genre: ${offer.genre}` : "", displayPrice(offer.price), offer.bpm ? `${offer.bpm} BPM` : "BPM not supplied by this shop", offer.musical_key ? `Key ${offer.musical_key}` : "Key not supplied by this shop"];
+    content.append(el("p", "field-help", facts.join(" · ")));
+  }
+  if (lookup.message) content.append(el("p", "field-help", lookup.message));
+  const time = checkedTime(lookup.checked_at); if (time) content.append(el("small", "row-note", `Checked ${time}`));
+  const button = el("button", "button button-outlined", "Review shop suggestion"); button.type = "button";
+  button.addEventListener("click", () => openProviderSearch(track, button)); content.append(button);
+}
+function renderLibrarySources() {
+  const library = ui.data.library || {};
+  const count = Number(library.entry_count || 0), scanned = Number(library.scan_count || 0);
+  const missing = Number(library.missing || 0);
+  $("#library-source-summary").textContent = count || scanned ? `${scanned.toLocaleString()} indexed media files · ${count.toLocaleString()} XML entries${library.source_name ? ` (${library.source_name})` : ""} · ${missing.toLocaleString()} unavailable` : "Refresh your music folder or import a Rekordbox XML export to check what you already have.";
+  const xmlTime = checkedTime(library.refreshed_at);
+  const mediaTime = checkedTime(library.media_refreshed_at || ui.data.media?.refreshed_at);
+  $("#library-refresh-time").textContent = [mediaTime ? `Media checked ${mediaTime}` : "", xmlTime ? `XML read ${xmlTime}` : ""].filter(Boolean).join(" · ");
+  const warnings = [];
+  const mediaSkipped = Number(library.media_skipped || 0), xmlSkipped = Number(library.skipped || 0);
+  if (mediaSkipped > 0) warnings.push(`Partial media scan: ${mediaSkipped} files or folders could not be read. Previous entries were kept. Check drive access and refresh media again.`);
+  if (xmlSkipped > 0) warnings.push(`${xmlSkipped} XML entries had unusable audio-file locations and were skipped. Review your export before relying on this inventory.`);
+  $("#library-refresh-help").textContent = warnings.length ? warnings.join(" ") : ui.data.settings?.rekordbox_xml ? "Refresh XML rereads your saved export. Export a fresh XML from Rekordbox when its library changes." : "Save your XML file path in Settings for one-click refresh. An uploaded XML remains available for duplicate checks.";
+  $("#library-refresh-help").classList.toggle("source-warning", warnings.length > 0);
+}
+function renderStoreJob(job) {
+  const card = $("#store-job-card");
+  card.hidden = ui.data.mode === "demo" || (!job.running && !Number(job.total || 0));
+  if (card.hidden) return;
+  const total = Number(job.total || 0), done = Number(job.completed || 0);
+  $("#store-job-title").textContent = job.running ? "Finding shop links" : job.cancel_requested ? "Shop lookup stopped" : "Shop lookup results";
+  const current = typeof job.current_track === "string" ? job.current_track : job.current_track?.title_and_version || job.current_track?.title || "";
+  const message = job.message || (job.running ? `${done} of ${total} checked${current ? ` · ${current}` : ""}. You can keep using DJList.` : `${done} of ${total} checked. Review the shop column for each track.`);
+  if ($("#store-job-message").textContent !== message) $("#store-job-message").textContent = message;
+  const progress = $("#store-job-progress"); progress.max = Math.max(1, total); progress.value = Math.min(done, total);
+  $("#store-job-summary").textContent = `${Number(job.matched || 0)} candidates · ${Number(job.review || 0)} to review · ${Number(job.not_found || 0)} without a match · ${Number(job.failed || 0)} failed`;
+  $("#cancel-store-job").hidden = !job.running;
+}
+function canUpdateRows() {
+  return !$("dialog[open]") && !ui.busy.size && !document.activeElement?.closest("#track-rows");
+}
+async function flushPendingRefresh() {
+  if (!ui.pendingRefresh || !canUpdateRows() || ui.pollBusy) return;
+  ui.pendingRefresh = false;
+  try { await refresh(); } catch (error) { toast(error.message, true); }
+}
+function scheduleStorePoll() {
+  window.clearTimeout(ui.pollTimer); ui.pollTimer = null;
+  if (!ui.data?.store_job?.running || ui.data.mode === "demo" || !ui.runtimeCompatible || document.hidden) return;
+  ui.pollTimer = window.setTimeout(pollStoreJob, 2000);
+}
+async function pollStoreJob() {
+  if (ui.pollBusy) return;
+  ui.pollBusy = true;
+  try {
+    const result = await api("/api/store-job"); const job = result.store_job || result;
+    const signature = JSON.stringify([job.running, job.total, job.completed, job.matched, job.review, job.not_found, job.failed, job.queued]);
+    const changed = signature !== ui.jobSignature; ui.jobSignature = signature;
+    ui.data.store_job = job; renderStoreJob(job); updateControls();
+    if (changed) {
+      if (canUpdateRows()) await refresh(); else ui.pendingRefresh = true;
+    }
+  } catch (error) {
+    $("#store-job-message").textContent = `Progress could not refresh: ${error.message}`;
+  } finally { ui.pollBusy = false; scheduleStorePoll(); }
+}
+async function refreshStoreTracks(button, id = null) {
+  await busy(button, async () => {
+    try {
+      await mutation(id ? `/api/tracks/${encodeURIComponent(id)}/refresh-store` : "/api/store-refresh", id ? {} : {force: true});
+      await refresh();
+      if ($("#actions-dialog").open) $("#actions-dialog").close();
+      toast(id ? "Shop lookup queued for this track." : "Shop lookup queued. Progress appears above the table.");
+    } catch (error) {
+      if ($("#actions-dialog").open) showError("#actions-error", error.message); else toast(error.message, true);
+    }
+  });
+}
+function openActions(track, opener) {
+  ui.actionTrack = track.id; ui.actionOpener = opener;
+  $("#actions-track-name").textContent = `${track.artists} · ${track.title_and_version}`;
+  const candidates = ui.suggestions.get(track.id) || [];
+  $("#action-library-summary").textContent = track.local_file ? track.file_available ? "A file is already linked" : "Your linked file is currently unavailable" : candidates.length ? `${candidates.length} possible ${candidates.length === 1 ? "copy" : "copies"} to check` : "No suggested copy yet · refresh your library first";
+  $("#action-refresh-store").disabled = ui.data.mode === "demo" || !ui.runtimeCompatible;
+  $("#action-find").disabled = !ui.runtimeCompatible;
+  showError("#actions-error", ""); $("#actions-dialog").showModal();
+}
+function actionDetails(review = false, find = false) {
+  const id = ui.actionTrack; $("#actions-dialog").close();
+  openTrack(id);
+  if (review) {
+    if (!$("#match-list").hidden) $("#match-list").scrollIntoView({block: "nearest"});
+    else $("#detail-file").focus();
+  }
+  if (find) openProviderSearch(ui.selected, $("#detail-find-downloads"));
+}
+function openLibraryReview(opener = document.activeElement) {
+  libraryUI.opener = opener; libraryUI.page = 1; libraryUI.query = ""; libraryUI.filter = "all";
+  $("#library-search").value = ""; $("#library-filter").value = "all";
+  $("#library-entries").replaceChildren(); $("#library-duplicate-summary").hidden = true;
+  showError("#library-review-error", ""); $("#library-review-dialog").showModal(); loadLibraryReview();
+}
+async function loadLibraryReview() {
+  const request = ++libraryUI.requestId;
+  $("#library-review-status").textContent = "Checking your saved library inventory…";
+  $("#library-search-button").disabled = true;
+  const parameters = new URLSearchParams({q: libraryUI.query, page: String(libraryUI.page), page_size: String(libraryUI.pageSize), filter: libraryUI.filter});
+  try {
+    const result = await api(`/api/library-review?${parameters}`);
+    if (request !== libraryUI.requestId || !$("#library-review-dialog").open) return;
+    showError("#library-review-error", ""); renderLibraryReview(result);
+  } catch (error) {
+    if (request !== libraryUI.requestId || !$("#library-review-dialog").open) return;
+    showError("#library-review-error", error.message); $("#library-review-status").textContent = "The library review could not refresh. Your previous inventory is kept.";
+  } finally { if (request === libraryUI.requestId) $("#library-search-button").disabled = false; }
+}
+function renderLibraryReview(result) {
+  const entries = Array.isArray(result.entries) ? result.entries : [];
+  const summary = result.summary || {};
+  const total = Number(result.total || 0); libraryUI.page = Number(result.page || 1); libraryUI.pages = Math.max(1, Number(result.pages || Math.ceil(total / libraryUI.pageSize)));
+  $("#library-review-summary").textContent = `${Number(summary.total ?? summary.entry_count ?? total).toLocaleString()} library entries${Number.isFinite(summary.missing) ? ` · ${summary.missing} unavailable` : ""}`;
+  $("#library-review-status").textContent = entries.length ? "Listed files are evidence to review, not automatic ownership confirmation." : "No entries match this view. Refresh media or import an XML export if your library is empty.";
+  const list = $("#library-entries"); list.replaceChildren();
+  for (const entry of entries) {
+    const card = el("article", "inventory-entry");
+    card.append(el("h3", "", entry.title || entry.name || "Untitled library entry"), el("p", "inventory-artist", entry.artist || "Artist not supplied"));
+    const state = entry.within_root === false ? "Outside configured music folder" : entry.available ? "File available" : "File unavailable · still in inventory";
+    card.append(el("span", `inventory-state${entry.available ? " available" : ""}`, state));
+    const facts = [entry.album, entry.genre, entry.bpm ? `${entry.bpm} BPM` : "", entry.key || entry.musical_key,
+      entry.source === "rekordbox_xml" ? "Rekordbox XML" : entry.source === "scan" ? "Music folder" : entry.source, Number(entry.cue_count) > 0 ? `${entry.cue_count} cue marks in XML` : ""].filter(Boolean);
+    if (facts.length) card.append(el("p", "field-help", facts.join(" · ")));
+    const path = el("details", "inventory-path"); path.append(el("summary", "", "File location"), el("p", "", entry.path || "Location not supplied")); card.append(path);
+    if (entry.duplicate || entry.duplicate_group || entry.possible_duplicate) card.append(el("p", "duplicate-note", "Possible duplicate · compare the versions and files"));
+    list.append(card);
+  }
+  const groups = Array.isArray(result.duplicate_groups) ? result.duplicate_groups : [];
+  const duplicateSummary = $("#library-duplicate-summary"); duplicateSummary.replaceChildren(); duplicateSummary.hidden = !groups.length;
+  if (groups.length) {
+    const count = Number(summary.duplicate_groups_count ?? groups.length);
+    duplicateSummary.append(el("strong", "", `${count} possible duplicate ${count === 1 ? "group" : "groups"}`), el("p", "field-help", "The inventory contains repeated artist/title versions. Nothing is deleted or merged. Use “Possible duplicates” to inspect the entries."));
+  }
+  const start = total ? (libraryUI.page - 1) * Number(result.page_size || libraryUI.pageSize) + 1 : 0;
+  $("#library-result-count").textContent = total ? `${start}–${Math.min(total, start + entries.length - 1)} of ${total.toLocaleString()}` : "No entries";
+  $("#library-page-number").textContent = `Page ${libraryUI.page} of ${libraryUI.pages}`;
+  $("#library-previous-page").disabled = libraryUI.page <= 1; $("#library-next-page").disabled = libraryUI.page >= libraryUI.pages;
+}
+
 function openSettings() {
   const settings = ui.data?.settings || {};
   $("#client-id").value = settings.spotify_client_id || "";
   $("#playlist-url").value = settings.playlist_url || "";
   $("#music-root").value = settings.music_root || "";
   $("#rekordbox-db").value = settings.rekordbox_db || "";
+  $("#rekordbox-xml").value = settings.rekordbox_xml || "";
+  $("#auto-store-lookup").checked = settings.auto_store_lookup !== false;
   showError("#settings-error", ""); $("#settings-dialog").showModal();
 }
-function settingsValues() { return {spotify_client_id: $("#client-id").value.trim(), playlist_url: $("#playlist-url").value.trim(), music_root: $("#music-root").value.trim(), rekordbox_db: $("#rekordbox-db").value.trim()}; }
+function settingsValues() { return {spotify_client_id: $("#client-id").value.trim(), playlist_url: $("#playlist-url").value.trim(), music_root: $("#music-root").value.trim(), rekordbox_db: $("#rekordbox-db").value.trim(), rekordbox_xml: $("#rekordbox-xml").value.trim(), auto_store_lookup: $("#auto-store-lookup").checked}; }
 async function connectSpotify(button, saveSettings = false) {
   await busy(button, async () => {
     try {
@@ -277,18 +460,31 @@ function openTrack(id) {
   const spotify = $("#spotify-track-link"); const spotifyURL = safeURL(track.spotify_url);
   spotify.hidden = !spotifyURL;
   if (spotifyURL) spotify.href = spotifyURL; else spotify.removeAttribute("href");
-  showError("#track-error", ""); renderMatches(track); $("#track-dialog").showModal();
+  showError("#track-error", ""); renderDetailStore(track); renderMatches(track); $("#track-dialog").showModal();
 }
 function renderMatches(track) {
   const list = $("#match-list"); const candidates = ui.suggestions.get(track.id) || [];
   list.replaceChildren(); list.hidden = candidates.length === 0;
   if (!candidates.length) return;
-  list.append(el("h4", "", "Possible files · check the version before linking"));
+  list.append(el("h4", "", "Possible existing copies · check before buying"));
+  list.append(el("p", "field-help", "Confirm the artist, mix and file. An XML entry can remain here while its drive is disconnected."));
   for (const candidate of candidates.slice(0, 5)) {
-    const button = el("button", "match-option", candidate.name || candidate.path); button.type = "button";
-    button.append(el("small", "", candidate.path));
-    button.addEventListener("click", () => { $("#detail-file").value = candidate.path; if (!$("#detail-key").value && candidate.key) $("#detail-key").value = candidate.key; if (!$("#detail-bpm").value && candidate.bpm) $("#detail-bpm").value = candidate.bpm; $("#file-help").textContent = "File selected. Choose Save changes to confirm this link."; $$(".match-option", list).forEach(item => item.setAttribute("aria-pressed", String(item === button))); });
-    list.append(button);
+    const item = el("div", "library-match");
+    item.append(el("strong", "", candidate.name || candidate.title || candidate.path), el("small", "match-path", candidate.path));
+    const facts = [candidate.artist, candidate.bpm ? `${candidate.bpm} BPM` : "", candidate.key,
+      candidate.genre, candidate.source === "rekordbox_xml" ? "Rekordbox XML" : candidate.source || "Music folder"].filter(Boolean);
+    if (facts.length) item.append(el("p", "field-help", facts.join(" · ")));
+    if (candidate.reasons?.length) item.append(el("p", "field-help", candidate.reasons.join(" · ")));
+    const canLink = candidate.available !== false && candidate.within_root !== false;
+    const button = el("button", "button button-outlined match-option", canLink ? "Select this file" : candidate.within_root === false ? "Outside your music folder" : "File currently unavailable");
+    button.type = "button"; button.disabled = !canLink; button.setAttribute("aria-pressed", "false");
+    button.addEventListener("click", () => {
+      $("#detail-file").value = candidate.path;
+      if (!$("#detail-key").value && candidate.key) $("#detail-key").value = candidate.key;
+      if (!$("#detail-bpm").value && candidate.bpm) $("#detail-bpm").value = candidate.bpm;
+      $("#file-help").textContent = "File selected. Choose Save changes to confirm this link and its available BPM/key.";
+      $$(".match-option", list).forEach(other => other.setAttribute("aria-pressed", String(other === button)));
+    }); item.append(button); list.append(item);
   }
 }
 function ingestSuggestions(result) {
@@ -530,7 +726,13 @@ function openProviderSearch(track = null, opener = null) {
   clearProviderResults("Enter a song or artist, then choose Search.");
   dialog.showModal();
   $("#provider-query").focus();
-  if (query.trim()) runProviderSearch();
+  const saved = track?.store_lookup;
+  const offers = Array.isArray(saved?.offers) && saved.offers.length ? saved.offers : saved?.offer ? [saved.offer] : [];
+  if (offers.length) {
+    renderCatalog({offers, checked_at: saved.checked_at, cached: true, notice: "Saved shop candidates. Check the exact mix and current shop price; choose Search to look again.", errors: saved.status === "error" ? [{message: saved.message || "The most recent refresh failed. These are earlier candidates."}] : []});
+    const request = providerUI.requestId;
+    api(`/api/provider-search?q=${encodeURIComponent(query)}`).then(result => { if (request === providerUI.requestId && dialog.open) renderShopLinks(result); }).catch(error => { if (request === providerUI.requestId && dialog.open) showError("#provider-error", error.message); });
+  } else if (query.trim()) runProviderSearch();
 }
 async function runProviderSearch() {
   if (!ui.runtimeCompatible) { showError("#provider-error", RESTART_MESSAGE); return; }
@@ -597,6 +799,10 @@ window.addEventListener("pagehide", stopPreview);
 $$("[data-filter]").forEach(button => button.addEventListener("click", () => setFilter(button.dataset.filter)));
 $("#track-search").addEventListener("input", event => { ui.query = event.target.value; ui.page = 1; if (ui.data) renderTracks(); });
 $("#track-sort").addEventListener("change", event => { ui.sort = event.target.value; ui.page = 1; if (ui.data) renderTracks(); });
+$("#track-store-filter").addEventListener("change", event => { ui.storeFilter = event.target.value; ui.page = 1; if (ui.data) renderTracks(); });
+$("#track-library-filter").addEventListener("change", event => { ui.libraryFilter = event.target.value; ui.page = 1; if (ui.data) renderTracks(); });
+$("#page-size").addEventListener("change", event => { ui.pageSize = Number(event.target.value); ui.page = 1; if (ui.data) renderTracks(); });
+$("#clear-track-filters").addEventListener("click", () => { ui.query = ""; ui.storeFilter = "all"; ui.libraryFilter = "all"; $("#track-search").value = ""; $("#track-store-filter").value = "all"; $("#track-library-filter").value = "all"; setFilter("all"); });
 $("#previous-page").addEventListener("click", () => { ui.page--; renderTracks(); });
 $("#next-page").addEventListener("click", () => { ui.page++; renderTracks(); });
 for (const id of ["#settings-button", "#source-settings", "#drive-settings", "#connect-start"]) $(id).addEventListener("click", openSettings);
@@ -609,7 +815,7 @@ $("#authorize-button").addEventListener("click", event => connectSpotify(event.c
 $("#sync-button").addEventListener("click", async event => {
   if (!ui.data?.connection?.connected) { openSettings(); return; }
   await busy(event.currentTarget, async () => {
-    try { const result = await mutation("/api/sync"); await refresh(); toast(`${result.added || 0} new tracks added. Your marks and notes were kept.`); }
+    try { const result = await mutation("/api/sync"); await refresh(); if (result.store_lookup_error) toast(`${result.added || 0} new tracks added. Shop lookup did not start: ${result.store_lookup_error}`, true); else toast(`${result.added || 0} new tracks added.${ui.data.store_job?.running ? " Shop lookup is running in the background." : " Your marks and notes were kept."}`); }
     catch (error) { await refresh().catch(() => {}); if (error.status === 401) { openSettings(); showError("#settings-error", error.message); } else toast(error.message, true); }
   });
 });
@@ -631,7 +837,13 @@ $("#track-form").addEventListener("submit", async event => {
 });
 $("#scan-button").addEventListener("click", async event => {
   await busy(event.currentTarget, async () => {
-    try { const result = await mutation("/api/scan"); ingestSuggestions(result); await refresh(); const matches = (result.suggestions || []).filter(item => item.candidates?.length).length; toast(`Read ${result.indexed || 0} audio files. ${matches} tracks have possible matches; open track details to review.`); }
+    try {
+      const result = await mutation("/api/scan"); ingestSuggestions(result); await refresh();
+      const matches = (result.suggestions || []).filter(item => item.candidates?.length).length;
+      const skipped = Number(result.skipped || 0);
+      if (skipped > 0) toast(`Read ${result.indexed || 0} audio files, but ${skipped} files or folders could not be read. Previous entries were kept. Check drive access and refresh media again.`, true);
+      else toast(`Read ${result.indexed || 0} audio files. ${matches} tracks have possible matches; open track details to review.`);
+    }
     catch (error) { toast(error.message, true); }
   });
 });
@@ -641,10 +853,52 @@ $("#import-form").addEventListener("submit", async event => {
   event.preventDefault(); const file = $("#xml-file").files[0]; if (!file) return;
   const button = $("button[type=submit]", event.currentTarget);
   await busy(button, async () => {
-    try { showError("#import-error", ""); const xml = await file.text(); const result = await mutation("/api/import-rekordbox-xml", {xml}); ingestSuggestions(result); await refresh(); $("#import-dialog").close(); toast(`Read ${result.indexed || result.imported || 0} library entries. Open track details to review suggested file matches.`); }
+    try {
+      showError("#import-error", ""); const xml = await file.text(); const result = await mutation("/api/import-rekordbox-xml", {xml, filename: file.name});
+      ingestSuggestions(result); await refresh(); $("#import-dialog").close();
+      const count = result.indexed ?? result.imported ?? 0, skipped = Number(result.skipped || 0);
+      if (skipped > 0) toast(`Read ${count} library entries. ${skipped} XML entries had unusable audio-file locations and were skipped. Review your export before relying on this inventory.`, true);
+      else toast(`Read ${count} library entries. Open track details to review suggested file matches.`);
+    }
     catch (error) { showError("#import-error", error.message); }
   });
 });
+$("#refresh-xml-button").addEventListener("click", async event => {
+  await busy(event.currentTarget, async () => {
+    try {
+      const result = await mutation("/api/refresh-libraries", {media: false, xml: true});
+      await refresh();
+      const errors = (result.errors || []).map(error => typeof error === "string" ? error : error.message).filter(Boolean);
+      if (errors.length) toast(errors.join(" "), true);
+      else if (Number(result.xml?.skipped || 0) > 0) toast(`XML refreshed with ${result.xml?.indexed ?? result.library?.entry_count ?? 0} entries. ${result.xml.skipped} entries had unusable audio-file locations and were skipped. Review your export.`, true);
+      else toast(`XML refreshed. ${result.xml?.indexed ?? result.library?.entry_count ?? 0} entries are available for review.`);
+    } catch (error) { toast(error.message, true); }
+  });
+});
+$("#review-library-button").addEventListener("click", event => openLibraryReview(event.currentTarget));
+$("#refresh-store-button").addEventListener("click", event => refreshStoreTracks(event.currentTarget));
+$("#cancel-store-job").addEventListener("click", async event => {
+  await busy(event.currentTarget, async () => { try { await mutation("/api/store-cancel"); await refresh(); toast("Stopping the lookup. A request already in progress may finish first."); } catch (error) { toast(error.message, true); } });
+});
+$("#action-edit").addEventListener("click", () => actionDetails());
+$("#action-find").addEventListener("click", () => actionDetails(false, true));
+$("#action-review-match").addEventListener("click", () => actionDetails(true));
+$("#action-refresh-store").addEventListener("click", event => refreshStoreTracks(event.currentTarget, ui.actionTrack));
+$("#actions-dialog").addEventListener("close", () => {
+  if (!$("dialog[open]")) {
+    const replacement = $$("[data-track-id]").find(node => node.dataset.trackId === ui.actionTrack && node.dataset.kind === "actions");
+    (replacement || (ui.actionOpener?.isConnected ? ui.actionOpener : $("#track-search"))).focus({preventScroll: true});
+  }
+});
+$("#library-review-form").addEventListener("submit", event => { event.preventDefault(); libraryUI.query = $("#library-search").value.trim(); libraryUI.filter = $("#library-filter").value; libraryUI.page = 1; loadLibraryReview(); });
+$("#library-filter").addEventListener("change", () => { libraryUI.query = $("#library-search").value.trim(); libraryUI.filter = $("#library-filter").value; libraryUI.page = 1; loadLibraryReview(); });
+$("#library-previous-page").addEventListener("click", () => { libraryUI.page = Math.max(1, libraryUI.page - 1); loadLibraryReview(); });
+$("#library-next-page").addEventListener("click", () => { libraryUI.page = Math.min(libraryUI.pages, libraryUI.page + 1); loadLibraryReview(); });
+$("#library-review-dialog").addEventListener("close", () => { libraryUI.requestId++; if (libraryUI.opener?.isConnected) libraryUI.opener.focus({preventScroll: true}); });
+for (const dialog of $$("dialog")) dialog.addEventListener("close", () => window.setTimeout(flushPendingRefresh, 0));
+document.addEventListener("focusin", () => { if (ui.pendingRefresh) window.setTimeout(flushPendingRefresh, 0); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { flushPendingRefresh(); scheduleStorePoll(); } else window.clearTimeout(ui.pollTimer); });
+window.addEventListener("pagehide", () => window.clearTimeout(ui.pollTimer));
 document.addEventListener("keydown", event => {
   if (event.key === "/" && !event.ctrlKey && !event.metaKey && !$("dialog[open]") && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) { event.preventDefault(); $("#track-search").focus(); }
 });

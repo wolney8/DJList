@@ -36,6 +36,11 @@ Rekordbox library, annotations and audio files.
 - Keep demo and real collections separate.
 - Treat file matches as suggestions until the user confirms them.
 - Keep ownership separate from current file availability.
+- Keep automated shop suggestions separate from annotations. Preserve prior
+  successful results on a failed refresh, and discard results for changed tracks.
+- Retain imported XML records when their drive is offline. A refresh reads the
+  selected export; it must not imply that DJList exported Rekordbox itself.
+- Distinguish XML identity from filename guesses when ranking possible copies.
 
 ## Interface
 
@@ -45,6 +50,8 @@ Rekordbox library, annotations and audio files.
   visible focus, meaningful contrast and status announcements.
 - Honour reduced motion. Avoid colour-only status and inaccessible icon controls.
 - Use at least 44 px targets for primary interactive controls where practical.
+- Keep track rows within the viewport; use pagination and responsive cards
+  instead of horizontal table scrolling. Keep actions reachable at small widths.
 - Label unverified store searches and planned features clearly.
 - Separate catalog candidates from confirmed recordings. Never silently copy a
   candidate's metadata over the user's annotations or mark it owned.

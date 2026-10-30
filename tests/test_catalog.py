@@ -85,6 +85,21 @@ class CatalogueTests(unittest.TestCase):
             self.assertIsNone(price_for(item(trackPrice=price)))
         self.assertEqual(price_for(item(trackPrice=1.29, currency="USD"))["display"], "USD 1.29")
 
+    def test_explicit_refresh_bypasses_cache_without_bypassing_request_limits(self):
+        calls = []
+        client = CatalogClient(fetcher=lambda query: calls.append(query) or [item(trackPrice=.99 + len(calls))], clock=lambda: 1)
+        first = client.search("Example Artist Night Window")
+        cached = client.search("Example Artist Night Window")
+        self.assertEqual(first["offers"][0]["price"], cached["offers"][0]["price"])
+        fresh = client.search("Example Artist Night Window", force=True)
+        self.assertFalse(fresh["cached"])
+        self.assertGreater(fresh["offers"][0]["price"]["amount"], first["offers"][0]["price"]["amount"])
+        for _ in range(catalog.MAX_CALLS_PER_MINUTE - 2):
+            client.search("Example Artist Night Window", force=True)
+        limited = client.search("Example Artist Night Window", force=True)
+        self.assertEqual(limited["errors"][0]["code"], "rate_limited")
+        self.assertEqual(len(calls), catalog.MAX_CALLS_PER_MINUTE)
+
     def test_busy_provider_failure_and_rate_limit_are_visible_without_fabricated_data(self):
         client = CatalogClient(fetcher=lambda query: (_ for _ in ()).throw(URLError("unavailable")))
         result = client.search("Example")

@@ -3,7 +3,7 @@
 **A local Spotify wishlist and DJ music tracker.** Find purchase candidates,
 listen to permitted store previews, record ownership and link your audio files.
 
-Version **0.2.0**. Development build; see [VERIFICATION.md](VERIFICATION.md) for
+Version **0.3.0**. Development build; see [VERIFICATION.md](VERIFICATION.md) for
 the checks performed and the remaining limits.
 
 ## Open it on a Mac
@@ -15,7 +15,7 @@ the checks performed and the remaining limits.
 Keep the Terminal window running while using DJList. Press **Control+C** there
 to stop it. Python 3.9 or later is required; no additional Python packages are
 needed. The launcher checks common Python locations. Node is only needed for
-developer syntax checks.
+developer checks.
 
 This launcher is unsigned and unnotarised. macOS may require **System Settings →
 Privacy & Security → Open Anyway** for this specific file. Follow
@@ -55,11 +55,45 @@ tags and notes. Removed Spotify tracks remain recorded.
 Tokens remain in memory for the current run. They are not saved to disk,
 exported, logged or committed to Git.
 
+## Automatic shop lookup
+
+After a successful **Refresh Spotify**, DJList queues UK iTunes Store lookups
+for new or changed tracks, results at least 24 hours old, and failed or unfinished
+lookups. This is enabled by default. Turn **Find shop links after Spotify
+refresh** off in Settings to stop automatic lookup and cancel pending work.
+
+The queue starts at most one track lookup every eight seconds. Progress appears
+above the table, and **Stop lookup** cancels the queue; a request already in progress
+may need to return first. You can keep editing your tracks while it runs.
+Lookups run only while DJList is open. Saved results survive a restart;
+unfinished work needs another refresh.
+
+A single likely match can show a suggested shop link, listed price and labelled
+iTunes genre in the table. Ambiguous results ask you to review the candidates.
+These suggestions stay separate from your ownership ticks, confirmed purchase
+links, tags, key, BPM and notes. They do not overwrite your saved details.
+
+Use **Refresh shop links** to recheck the current Spotify list, or a track's
+**Actions** menu to refresh just that song. The UK iTunes Store is the only
+catalogue returning results inside DJList in this version.
+
+## Work with your track list
+
+Choose **10, 25, 50 or 100 rows** per page. Search tracks, artists or tags;
+filter by shop status and possible existing copies, linked files or unavailable
+linked files. Sort by artist, title, BPM, key or shop status. The existing
+**To buy**, **Owned** and **Files linked** views remain available.
+
+Each track's **Actions** menu opens its details, download candidates, shop
+refresh or existing-file suggestions. Spotify album artwork appears when
+available; a consistent coloured tile is used when artwork is unavailable.
+
 ## Find and preview a purchase candidate
 
-Open a track and choose **Find downloads**. DJList automatically searches the
-supported catalogue using that track's details. The toolbar also accepts a
-manual artist/title search without Spotify.
+Open a track and choose **Find downloads**. DJList shows saved candidates first,
+or searches the supported catalogue using that track's details. Choose **Search**
+to try another query. The toolbar also accepts a manual artist/title search
+without Spotify.
 
 ### Live catalogue: UK iTunes Store
 
@@ -93,12 +127,38 @@ plus ISRC where returned. New/development app restrictions prevent using its
 Audio Features and Audio Analysis endpoints for automatic BPM/key here.
 
 Artist genres can be broad or empty; they are not track-specific DJ mood or
-energy tags. Automatic Spotify artist-genre enrichment is deferred. Catalogue
-genres carry their iTunes source and are only added when selected.
+energy tags. Automatic Spotify artist-genre enrichment is deferred. A likely
+iTunes match can show a labelled genre suggestion; adding it to your own tags
+still requires your selection and **Save changes**. The iTunes catalogue used
+here does not supply BPM or musical key.
 
 Import a **Rekordbox XML inventory** to use existing analyzed key/BPM values
 when confirming a file match, or enter them manually. DJList does not analyze
 audio or claim that a key came from Spotify.
+
+## Refresh and review your existing library
+
+- **Refresh media** reads filenames and file information in your configured
+  music folder. It reports partial scans and keeps previous inventory entries
+  when some files or folders cannot be read.
+- **Refresh XML** rereads the **Rekordbox XML file** path saved in Settings.
+  Export a fresh XML from Rekordbox to that same file when its collection changes.
+  This button does not read the live Rekordbox database or create a new export.
+  **Import XML** also lets you choose an export without saving its path.
+- **Review library** lists the saved inventory, including unavailable files,
+  and lets you search or filter possible duplicates before buying another copy.
+
+The XML snapshot stays in DJList across restarts and while an SSD is disconnected.
+A missing or invalid export leaves the previous snapshot intact. If an otherwise
+usable export contains skipped entries, DJList shows a warning to review it.
+Existing XML metadata from a v0.2 collection is retained on upgrade.
+
+Duplicate suggestions compare artist, full title/version and duration where
+available. Filename matches are labelled as less certain. They are prompts to
+check the files, not proof of identical audio. Nothing is automatically linked,
+deleted or marked owned by a scan or XML refresh. Choose **Select this file**
+and **Save changes** to confirm a link; this records ownership and can fill
+empty key/BPM fields from the XML. You can also tick ownership manually.
 
 ## Music and local records
 
@@ -110,6 +170,10 @@ modify the live database.
 Scanning reads filenames and file information. Suggestions need confirmation.
 It never moves, renames, deletes or edits audio. Ownership is separate from
 file availability, so a disconnected drive does not clear ticks or saved paths.
+
+If you move folders or rename the SSD, update the music folder in Settings and
+export a fresh Rekordbox XML. Saved track links are not relocated automatically;
+review and confirm the correct files.
 
 On macOS, the SQLite database lives in:
 
@@ -126,8 +190,9 @@ backup. Demo records stay separate from the real collection.
 The server listens only on `127.0.0.1:8888`. Vercel is not used. Spotify requests
 go to Spotify. Live catalogue searches send artist/title terms to Apple's
 public API. Authorized previews stream directly from Apple's audio host after
-a click. External shop/Google links send the query when opened. The app does
-not upload your music library or audio files.
+a click. Spotify artwork loads from Spotify's image service. External shop/Google
+links send the query when opened. The app does not upload your music library or
+audio files.
 
 The public repository contains source, tests and documentation. Keep personal
 Client IDs, settings, playlists, databases, tokens, logs and music outside Git.
@@ -137,7 +202,9 @@ Client IDs, settings, playlists, databases, tokens, logs and music outside Git.
 ```bash
 python3 -m unittest discover -s tests -v
 python3 tools/smoke_test.py
+node --test tests/test_ui_model.js
 node --check web/app.js
+node --check web/track-model.js
 bash -n Start_DJList.command
 ```
 

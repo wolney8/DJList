@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — 30 October 2026
+
+- Queue iTunes Store lookups after Spotify refresh for new or changed tracks,
+  results at least 24 hours old, and failed or unfinished lookups. Add a Settings
+  switch, progress, cancellation and paced background requests.
+- Keep shop candidates, listed prices and sourced genre suggestions across
+  restarts, separate from manual annotations and ownership. The iTunes catalogue
+  used here does not supply BPM or musical key.
+- Show Spotify album artwork with a consistent coloured fallback.
+- Add page-size choices, shop/library filters, sorting and per-track actions.
+- Save an XML export path for one-click refresh. A fresh export from Rekordbox
+  is still needed when its collection changes.
+- Retain XML inventory while media is offline, preserve v0.2 XML metadata on
+  upgrade and keep the previous snapshot when XML refresh fails.
+- Add library search and conservative duplicate review. File linking and
+  ownership still require the user's confirmation.
+- Warn about partial media scans and skipped XML entries, and retain previous
+  inventory entries when a media scan cannot read every folder or file.
+
 ## 0.2.0 — 30 October 2026
 
 - Fix mixed UI/API builds by snapshotting assets at server startup.
