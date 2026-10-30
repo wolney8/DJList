@@ -61,6 +61,16 @@ package, visually checked and copied unchanged. See THIRD_PARTY_NOTICES.md.
   now requires exact normalized primary-artist identity, with a regression test.
 - Personal setup defaults and historical local paths removed from public source
   and documentation while retaining local saved settings.
+- A macOS test compared a temporary path alias with its canonical path. The
+  test now captures the linked path before simulating a drive disconnection and
+  verifies that the exact saved value, ownership and settings survive it.
+
+## Continuous checks
+
+GitHub Actions runs the unit/regression suite, real HTTP smoke test and syntax
+checks on Linux and macOS. Inspect the run for the commit being installed in
+the [Actions view](https://github.com/wolney8/DJList/actions); passing automation
+does not verify browser interaction, preview playback or the user's actual SSD.
 
 ## Remaining unverified checks
 
@@ -70,8 +80,6 @@ package, visually checked and copied unchanged. See THIRD_PARTY_NOTICES.md.
   the loopback-only app; no production network guard was weakened to bypass it.
 - Current prices at checkout, purchase format and region-specific availability.
 - The user's actual SSD scan, file-match quality and Rekordbox XML inventory.
-- GitHub Actions results must be read from the repository's Checks/Actions view;
-  a successful local run does not imply a passing remote workflow.
 
 ## Deferred
 

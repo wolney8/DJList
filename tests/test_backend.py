@@ -125,13 +125,16 @@ class AppCase(Fixture):
     def test_missing_drive_preserves_ownership_and_path(self):
         audio = self.make_audio()
         self.application.link(self.identity, str(audio))
+        # Linking stores the canonical path; macOS temporary paths can use /var aliases.
+        saved_path = self.current()["local_file"]
+        self.assertEqual(saved_path, str(audio.resolve(strict=True)))
         self.music.rename(self.root / "Disconnected")
         with self.assertRaises(AppError):
             self.application.scan()
         row = self.current()
         self.assertTrue(row["owned"])
         self.assertFalse(row["file_available"])
-        self.assertEqual(row["local_file"], str(audio))
+        self.assertEqual(row["local_file"], saved_path)
         self.assertEqual(self.application.state()["settings"]["rekordbox_db"], str(self.master))
 
     def test_link_rejects_outside_root_and_symlinks(self):
