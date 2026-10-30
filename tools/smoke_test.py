@@ -21,11 +21,23 @@ def main():
         for name in ("app.py", "spotify_api.py", "catalog.py"):
             shutil.copy2(source / name, app / name)
         shutil.copytree(source / "web", app / "web")
+        # Keep stalled startup diagnostics in the temporary test process only.
+        runner = app / "smoke_runner.py"
+        runner.write_text(
+            "import faulthandler, sys\n"
+            "faulthandler.dump_traceback_later(8)\n"
+            "import app\n"
+            "try:\n"
+            "    sys.exit(app.main())\n"
+            "finally:\n"
+            "    faulthandler.cancel_dump_traceback_later()\n",
+            encoding="utf-8",
+        )
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
         origin = "http://127.0.0.1:%d" % port
-        command = [sys.executable, str(app / "app.py"), "--port", str(port),
+        command = [sys.executable, "-u", str(runner), "--port", str(port),
                    "--data-dir", str(root / "data"), "--no-browser"]
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
@@ -86,6 +98,17 @@ def main():
             output = collision.stdout + collision.stderr
             assert "DJList" in output and "Control+C" in output, output
             print("PASS: live HTTP health, demo edits, provider route, catalog validation, startup asset snapshot and occupied-port guidance")
+        except Exception:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                output, _ = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                output, _ = process.communicate(timeout=5)
+            if output:
+                print("Temporary DJList process output:\n" + output, file=sys.stderr)
+            raise
         finally:
             if process.poll() is None:
                 process.terminate()
