@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#111217">
+  <title>DJList · Your tracks</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to tracks</a>
+  <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 18 17"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="m9 3-1 3-3 1-2 3 2 2-1 4 3 2 3-1 3 3 3-1 1-4 3-2-1-4-3-1-1-3Z"/><circle cx="12" cy="11.5" r="3"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14A8.6 8.6 0 0 1 10 3.5 8.6 8.6 0 1 0 20.5 14Z"/></symbol>
+    <symbol id="i-drive" viewBox="0 0 24 24"><path d="m5 4-3 11v5h20v-5L19 4Z"/><path d="M2 15h20m-5 2.5h.01m2.99 0h.01"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4m-5 6-2 2a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 2 2-2a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" transform="translate(1 1)"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m-5 5 5-5 5 5M4 16v5h16v-5"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M7 17 17 7H7m10 0v10"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2"/><ellipse cx="17" cy="16" rx="3" ry="2"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/></symbol>
+    <symbol id="i-spotify" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M6 9c4-1.5 8-1 12 1M7 12c3-1 7-.5 10 1m-9 2c2-.5 5-.3 8 1"/></symbol>
+  </svg>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Library navigation">
+      <a class="brand" href="/" aria-label="DJList home"><span class="brand-mark"><svg><use href="#i-note"/></svg></span><span>DJList</span></a>
+      <div class="nav-section-label">LIBRARY</div>
+      <nav class="main-nav" aria-label="Track views">
+        <button class="nav-item active" data-filter="all" aria-label="All tracks" aria-current="page"><svg><use href="#i-grid"/></svg><span>All tracks</span><span class="nav-count" id="nav-all">0</span></button>
+        <button class="nav-item" data-filter="wanted" aria-label="Tracks to buy"><svg><use href="#i-heart"/></svg><span>To buy</span><span class="nav-count" id="nav-wanted">0</span></button>
+        <button class="nav-item" data-filter="owned" aria-label="Owned tracks"><svg><use href="#i-check"/></svg><span>Owned</span><span class="nav-count" id="nav-owned">0</span></button>
+        <button class="nav-item" data-filter="linked" aria-label="Tracks with linked files"><svg><use href="#i-link"/></svg><span>Files linked</span><span class="nav-count" id="nav-linked">0</span></button>
+      </nav>
+      <div class="nav-section-label source-label">SOURCE</div>
+      <button class="source-button" id="source-settings" aria-label="Spotify connection settings"><span class="spotify-logo"><svg><use href="#i-spotify"/></svg></span><span><strong>Spotify</strong><small id="source-state">Not connected</small></span><svg class="chevron"><use href="#i-chevron"/></svg></button>
+      <div class="sidebar-bottom">
+        <div class="drive-card"><div class="drive-heading"><svg><use href="#i-drive"/></svg><strong id="drive-name">Music drive</strong><span class="status-dot" id="drive-dot"></span></div><p id="drive-status">Checking connection…</p><button class="text-button" id="drive-settings">Folder settings <span aria-hidden="true">↗</span></button></div>
+        <div class="local-indicator"><span class="local-dot"></span>Runs on this computer</div>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar"><span class="topbar-location">Library <span aria-hidden="true">/</span> <strong id="breadcrumb-view">All tracks</strong></span><div class="topbar-actions"><span class="app-version" id="app-version">v0.2.0</span><button class="icon-button" id="theme-toggle" aria-label="Switch to light theme" title="Switch theme"><svg><use href="#i-sun"/></svg></button><button class="icon-button" id="settings-button" aria-label="Open settings" title="Settings"><svg><use href="#i-settings"/></svg></button></div></header>
+
+      <main id="main" tabindex="-1">
+        <section class="runtime-warning" id="runtime-warning" role="alert" aria-labelledby="runtime-warning-title" hidden><h2 id="runtime-warning-title">Restart DJList to finish this update</h2><p id="runtime-version-detail"></p><p>Stop DJList in its Terminal window with <strong>Control+C</strong>, then open the updated launcher and reload this page.</p><button type="button" class="button button-outlined" id="runtime-reload">Reload after restarting</button></section>
+        <div class="demo-banner" id="demo-banner" hidden><span><strong>Demo collection</strong> · Fictional tracks. Your Spotify collection stays separate.</span><button class="text-button" id="leave-demo">Leave demo</button></div>
+        <div class="page-heading"><div><div class="eyebrow">YOUR COLLECTION</div><h1 id="view-title">All tracks<span class="title-count" id="title-count">0</span></h1><p id="page-description">Keep track of what you want, what you own and where it lives.</p></div><div class="heading-actions"><button class="button button-outlined" id="import-button"><svg><use href="#i-upload"/></svg>Import Rekordbox list</button><button class="button button-primary" id="sync-button"><svg><use href="#i-refresh"/></svg><span>Refresh Spotify</span></button></div></div>
+
+        <section class="connection-card" id="connection-card" aria-labelledby="connect-title" hidden><div class="connection-icon"><svg><use href="#i-spotify"/></svg></div><div><h2 id="connect-title">Connect your Spotify playlist</h2><p>Add the playlist you want to build into your DJ collection. Your ownership marks and notes stay with each track.</p><div class="connection-actions"><button class="button button-primary" id="connect-start">Connect Spotify <svg><use href="#i-arrow"/></svg></button><button class="button button-quiet" id="demo-start">Explore the demo</button></div></div></section>
+
+        <section class="library-panel" aria-label="Track library">
+          <div class="library-toolbar"><div class="search-field"><svg><use href="#i-search"/></svg><label class="sr-only" for="track-search">Search tracks, artists or tags</label><input id="track-search" type="search" placeholder="Search tracks, artists or tags" autocomplete="off"><kbd aria-hidden="true">/</kbd></div><div class="toolbar-actions"><button class="button button-tonal" id="find-downloads-button"><svg><use href="#i-search"/></svg>Find downloads</button><button class="button button-quiet" id="scan-button" aria-label="Scan music folder"><svg><use href="#i-drive"/></svg>Scan music folder</button><a class="icon-button" id="export-button" href="/api/export.csv" aria-label="Export your tracker as CSV" title="Export CSV"><svg><use href="#i-download"/></svg></a></div></div>
+          <div class="filter-row"><div class="filter-chips" role="group" aria-label="Filter tracks"><button class="filter-chip selected" data-filter="all" aria-pressed="true">All tracks</button><button class="filter-chip" data-filter="wanted" aria-pressed="false">To buy</button><button class="filter-chip" data-filter="owned" aria-pressed="false">Owned</button><button class="filter-chip" data-filter="linked" aria-pressed="false">Files linked</button></div><div class="sort-field"><label for="track-sort">Sort</label><select id="track-sort"><option value="newest">Recently added</option><option value="artist">Artist A–Z</option><option value="title">Track A–Z</option></select></div></div>
+          <div id="loading-state" class="loading-state"><span class="spinner" aria-hidden="true"></span><span>Loading your collection…</span></div>
+          <div class="empty-state" id="empty-state" hidden><span class="empty-disc" aria-hidden="true"><svg><use href="#i-note"/></svg></span><h2 id="empty-title">Your track list starts here</h2><p id="empty-description">Connect Spotify to bring in your playlist, or explore a sample collection.</p></div>
+          <div class="table-scroll" id="table-scroll" hidden><table class="tracks-table"><caption class="sr-only">Your tracks. Tick Owned to record a purchase. Select a track name to edit its details.</caption><thead><tr><th scope="col" class="owned-col">Owned</th><th scope="col">Track</th><th scope="col" class="tags-col">Tags</th><th scope="col" class="music-col">Key / BPM</th><th scope="col" class="file-col">File</th><th scope="col" class="edit-col"><span class="sr-only">Details</span></th></tr></thead><tbody id="track-rows"></tbody></table></div>
+          <footer class="library-footer"><span id="result-count" role="status">No tracks yet</span><div class="pagination"><button class="icon-button" id="previous-page" aria-label="Previous page" disabled><svg class="rotate"><use href="#i-chevron"/></svg></button><span id="page-number">1 / 1</span><button class="icon-button" id="next-page" aria-label="Next page" disabled><svg><use href="#i-chevron"/></svg></button></div></footer>
+        </section>
+        <div class="bottom-note"><span><svg><use href="#i-info"/></svg><span id="sync-info">Spotify supplies the list. Purchased files stay on your drive.</span></span><span class="save-indicator"><span class="local-dot"></span>Ownership ticks save automatically</span></div>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title"><form id="settings-form"><div class="dialog-heading"><div><p class="eyebrow">DJLIST</p><h2 id="settings-title">Connections & folders</h2></div><button type="button" class="icon-button close-dialog" aria-label="Close settings"><svg><use href="#i-close"/></svg></button></div><div class="dialog-content"><section class="form-section"><h3><svg><use href="#i-spotify"/></svg>Spotify</h3><label class="field-label" for="client-id">Client ID</label><input id="client-id" name="client_id" autocomplete="off" spellcheck="false" placeholder="Your Spotify app’s Client ID"><p class="field-help">Use the Client ID from your DJList app. A client secret is not needed. Sign-in lasts until you close the DJList app.</p><label class="field-label" for="playlist-url">Playlist link</label><input id="playlist-url" name="playlist_url" type="text" autocomplete="off" spellcheck="false" placeholder="https://open.spotify.com/playlist/… or liked" aria-describedby="playlist-help"><p class="field-help" id="playlist-help">Paste a playlist link, or enter <strong>liked</strong> for your Liked Songs. This version tracks one source; it is fixed after your first refresh.</p><div class="redirect-note"><span>Spotify redirect URI</span><code>http://127.0.0.1:8888/callback</code></div><button type="button" class="button button-tonal" id="authorize-button"><svg><use href="#i-link"/></svg>Save & connect Spotify</button></section><section class="form-section"><h3><svg><use href="#i-drive"/></svg>Your music folders</h3><label class="field-label" for="music-root">Music folder</label><input id="music-root" name="music_root" autocomplete="off" spellcheck="false" placeholder="/Volumes/YourDrive/DJ Music"><p class="field-help">Scanning reads filenames and checks files. Import a Rekordbox XML list to bring in key and BPM. Your audio files stay unchanged.</p><label class="field-label" for="rekordbox-db">Rekordbox database</label><input id="rekordbox-db" name="rekordbox_db" autocomplete="off" spellcheck="false" placeholder="Optional: path to your Rekordbox master.db"><p class="field-help">Saved for your setup. This version does not edit the Rekordbox database or generate cues.</p></section><p class="form-error" id="settings-error" role="alert" hidden></p></div><div class="dialog-footer"><button type="button" class="button button-quiet close-dialog">Cancel</button><button type="submit" class="button button-primary">Save settings</button></div></form></dialog>
+
+  <dialog id="track-dialog" class="track-dialog" aria-labelledby="detail-title"><form id="track-form"><div class="dialog-heading track-heading"><div><p class="eyebrow" id="detail-artist"></p><h2 id="detail-title">Track details</h2><p class="detail-album" id="detail-album"></p></div><button type="button" class="icon-button close-dialog" aria-label="Close track details"><svg><use href="#i-close"/></svg></button></div><div class="dialog-content"><label class="ownership-control"><span><strong>I own this track</strong><small>Mark it after you’ve purchased or received the file.</small></span><input type="checkbox" id="detail-owned" name="owned" role="switch"></label><div class="detail-facts" id="detail-facts"></div><label class="field-label" for="detail-prep">Preparation</label><select id="detail-prep" name="prep_status"><option value="wishlist">Wishlist</option><option value="bought">Bought</option><option value="downloaded">File downloaded</option><option value="imported">Imported to Rekordbox</option><option value="reviewed">Cues reviewed</option></select><p class="field-help">Update this after each step. DJList does not check your cues.</p><section class="form-section"><h3>Your tags & notes</h3><label class="field-label" for="detail-tags">Tags</label><input id="detail-tags" name="tags" placeholder="jungle; melancholic; warm-up"><p class="field-help">Separate tags with a semicolon. These tags stay in DJList.</p><div class="field-grid"><div><label class="field-label" for="detail-key">Musical key</label><input id="detail-key" name="musical_key" placeholder="e.g. C minor"></div><div><label class="field-label" for="detail-bpm">BPM</label><input id="detail-bpm" name="bpm" type="number" min="1" max="999" step="0.01" placeholder="—"></div><div><label class="field-label" for="detail-energy">Energy · 1–10</label><input id="detail-energy" name="energy" type="number" min="1" max="10" step="1" placeholder="—"></div></div><label class="field-label" for="detail-notes">Notes</label><textarea id="detail-notes" name="notes" rows="3" placeholder="What makes this track work for your set?"></textarea></section><section class="form-section"><h3>Purchase & audio file</h3><p class="section-help">Check the artist, exact mix and file format before buying.</p><button type="button" class="button button-tonal" id="detail-find-downloads"><svg><use href="#i-search"/></svg>Find downloads</button><p class="field-help">Open shop searches, then save the confirmed version’s page address below.</p><label class="field-label" for="detail-purchase">Confirmed purchase link</label><input id="detail-purchase" name="purchase_url" type="url" placeholder="https://…"><label class="field-label" for="detail-file">Local audio file</label><input id="detail-file" name="local_file" spellcheck="false" placeholder="/Volumes/YourDrive/DJ Music/…"><p class="field-help" id="file-help">Link the purchased version. Files are never moved by DJList.</p><div class="match-list" id="match-list" hidden></div></section><details class="cue-section"><summary>Cue preparation notes <span class="small-badge">Notes only</span></summary><p class="field-help">Record ideas for later. Cue generation and Rekordbox writes are not enabled in this version.</p><label class="sr-only" for="detail-cues">Cue preparation notes</label><textarea id="detail-cues" name="cue_notes" rows="3" placeholder="Intro, drop or outro points to review…"></textarea></details><p class="form-error" id="track-error" role="alert" hidden></p></div><div class="dialog-footer"><a class="button button-quiet" id="spotify-track-link" target="_blank" rel="noopener noreferrer">Open in Spotify <svg><use href="#i-arrow"/></svg></a><button type="submit" class="button button-primary">Save changes</button></div></form></dialog>
+
+  <dialog id="import-dialog" class="import-dialog" aria-labelledby="import-title"><form id="import-form"><div class="dialog-heading"><div><p class="eyebrow">EXISTING COLLECTION</p><h2 id="import-title">Import a Rekordbox list</h2></div><button type="button" class="icon-button close-dialog" aria-label="Close import"><svg><use href="#i-close"/></svg></button></div><div class="dialog-content"><p>Choose an XML library export from Rekordbox. DJList uses it to help match tracks you already have.</p><p class="field-help">This reads your exported list. It does not change Rekordbox or your music files.</p><label class="file-picker" for="xml-file"><svg><use href="#i-upload"/></svg><strong>Choose a Rekordbox XML file</strong><span id="xml-filename">.xml files</span><input id="xml-file" type="file" accept=".xml,application/xml,text/xml" required></label><p class="form-error" id="import-error" role="alert" hidden></p></div><div class="dialog-footer"><button type="button" class="button button-quiet close-dialog">Cancel</button><button type="submit" class="button button-primary">Read library list</button></div></form></dialog>
+
+  <dialog id="provider-dialog" class="provider-dialog" aria-labelledby="provider-title" aria-describedby="provider-description">
+    <form id="provider-form">
+      <div class="dialog-heading"><div><p class="eyebrow">MUSIC SHOPS</p><h2 id="provider-title">Find downloads</h2></div><button type="button" class="icon-button close-dialog" aria-label="Close download search"><svg><use href="#i-close"/></svg></button></div>
+      <div class="dialog-content">
+        <p id="provider-description" class="provider-intro">Check the UK iTunes Store for possible matches, prices and previews. Other music shops are linked below.</p>
+        <p id="provider-context" class="provider-context" hidden></p>
+        <label class="field-label" for="provider-query">Artist and song, including the mix or version</label>
+        <div class="provider-query-row"><input id="provider-query" name="query" type="search" required maxlength="500" autocomplete="off" placeholder="Artist — Track (Extended Mix)" aria-describedby="provider-query-help"><button type="submit" class="button button-primary" id="provider-search-button"><svg><use href="#i-search"/></svg>Search</button></div>
+        <p id="provider-query-help" class="field-help">Keep the mix name so you can check the correct version. You can shorten the search if no suitable match appears.</p>
+        <p id="provider-status" class="provider-status" role="status">Enter a song or artist, then choose Search.</p>
+        <section id="catalog-results" class="catalog-results" aria-labelledby="catalog-title" hidden>
+          <div class="catalog-heading"><h3 id="catalog-title">Possible matches · iTunes UK</h3><span id="catalog-check-time" class="catalog-check-time"></span></div>
+          <p id="catalog-notice" class="field-help"></p>
+          <p id="catalog-warning" class="catalog-warning" hidden></p>
+          <div id="catalog-cards" class="catalog-cards"></div>
+          <p id="catalog-empty" class="catalog-empty" hidden>No candidates were returned. Try a shorter search, or open another shop below.</p>
+          <p class="catalog-legal">iTunes Store is a trademark of Apple Inc., registered in the U.S. and other countries.</p>
+        </section>
+        <p id="catalog-error" class="form-error" role="alert" hidden></p>
+        <section id="provider-results" class="provider-results" aria-labelledby="provider-results-title" hidden>
+          <h3 id="provider-results-title">Search other shops</h3>
+          <p id="provider-result-query" class="provider-result-query"></p>
+          <div id="provider-links" class="provider-links"></div>
+          <a id="provider-combined" class="button button-outlined" target="_blank" rel="noopener noreferrer" hidden>Search all three shops on Google <svg><use href="#i-arrow"/></svg></a>
+          <p class="field-help">These are search links. DJList has not checked availability or prices. Confirm the artist, mix and download format on the shop’s page.</p>
+        </section>
+        <p id="provider-error" class="form-error" role="alert" hidden></p>
+        <p id="provider-selection-status" class="provider-selection-status" role="status"></p>
+        <p id="provider-purchase-help" class="provider-purchase-help" hidden>Check the exact mix, duration and download format before choosing a version. Selecting a shop link fills your draft; use <strong>Save changes</strong> in track details to keep it.</p>
+      </div>
+      <div class="dialog-footer"><button type="button" class="button button-primary" id="provider-done">Done</button></div>
+    </form>
+  </dialog>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
