@@ -4,9 +4,9 @@
 Run: python3 app.py
 Test data location: python3 app.py --data-dir /tmp/djlist-test --no-browser
 The app binds to 127.0.0.1 only. Spotify credentials stay in memory for this run.
-Selected music/download folders and embedded tags are read-only. The metadata
-reader is bundled. Rekordbox's database is never opened or changed. Cue
-generation and audio-file moves are not implemented.
+Embedded tags are read-only. Reviewed audio-file changes use a recoverable
+journal; scanning never changes audio. The live Rekordbox database is opened
+read-only for checked snapshots and is never edited by DJList.
 """
 import argparse
 from contextlib import contextmanager
@@ -46,18 +46,25 @@ from relocation import _root as file_root, _snapshot as file_snapshot
 from rekordbox_backups import RekordboxBackups
 from library_audit import LibraryAudit
 from cue_planner import CuePlanner
+from activity import ActivityRegistry, reported
+from file_operations import FileOperations
+from local_media import LocalMedia
+from metadata_review import MetadataReview
+from cuegen_bridge import CueGenBridge
 
-VERSION = "0.6.0"
-API_VERSION = 6
+VERSION = "0.7.0"
+API_VERSION = 7
 DEFAULTS = {
     "spotify_client_id": "",
     "playlist_url": "", "music_root": "~/Music/DJ Music",
     "rekordbox_db": "", "rekordbox_xml": "", "auto_store_lookup": True,
     "download_root": "", "auto_library_refresh": True,
     "rekordbox_backup_root": "", "auto_rekordbox_backup": True,
+    "cuegen_path": "", "rekordbox_analysis_root": "",
 }
 MANUAL = {"owned": False, "tags": "", "musical_key": "", "bpm": "", "energy": "",
-          "purchase_url": "", "local_file": "", "cue_notes": "", "notes": "", "prep_status": "wishlist"}
+          "purchase_url": "", "purchase_price": "", "purchase_currency": "GBP",
+          "local_file": "", "cue_notes": "", "notes": "", "prep_status": "wishlist"}
 STATUSES = {"wishlist", "bought", "downloaded", "imported", "reviewed"}
 AUDIO_EXTENSIONS = {".mp3", ".aiff", ".aif", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".alac"}
 MAX_BODY = 20 * 1024 * 1024
@@ -314,6 +321,8 @@ class Application:
         self.last_auth_error = ""
         self.auth_lock = threading.RLock()
         self.work_lock = threading.RLock()
+        self.settings_lock = threading.RLock()
+        self.activity = ActivityRegistry()
         self._closing = False
         self.catalog = CatalogClient()
         self.musicbrainz = MusicBrainzClient()
@@ -327,6 +336,10 @@ class Application:
         self.library_audit = LibraryAudit(self.store, self.library)
         self.cue_planner = CuePlanner(self.store, self.library)
         self.backups = RekordboxBackups(self.store, self.work_lock)
+        self.file_operations = FileOperations(self.store, self.library)
+        self.local_media = LocalMedia(self.store, self.library)
+        self.metadata_review = MetadataReview(self.store, self.library)
+        self.cuegen = CueGenBridge(self.store, self.backups, self.cue_planner)
         self.picker = NativePicker()
         self.library_watcher = LibraryWatcher(self.store.settings, self._automatic_library_refresh, self.library.invalidate)
         self.lookup = StoreLookupQueue(self.store, lambda query, reference, force=False: self.catalog.search(query, reference, force=force))
@@ -340,6 +353,8 @@ class Application:
         self.inbox.clear()
         self.library_audit.clear()
         self.cue_planner.clear()
+        self.file_operations.clear()
+        self.metadata_review.clear()
 
     def start_watchers(self):
         self.library_watcher.start()
@@ -348,11 +363,19 @@ class Application:
     def library_task(self, callback, *args, **kwargs):
         """Serialize reviewed file work with folder changes; annotations stay usable."""
         if not self.work_lock.acquire(blocking=False):
-            raise AppError("Another library action is running. Try again when it finishes.", 409)
+            raise AppError(self.busy_message(), 409)
         try:
             if self._closing or self.namespace() != "real":
                 raise AppError("Open your real collection before using library tools.", 409)
-            return callback(*args, **kwargs)
+            labels = {"verify_duplicates": "Comparing duplicate file contents", "preview_relink": "Finding replacement files",
+                      "apply_relink": "Updating a reviewed missing-file link", "plan": "Preparing cue suggestions",
+                      "export": "Exporting reviewed cue markers", "create": "Backing up the Rekordbox database",
+                      "verify": "Checking a database backup", "review": "Reviewing library health",
+                      "export_report": "Exporting the library report", "preview": "Preparing a file review",
+                      "apply": "Applying reviewed file changes", "undo_apply": "Undoing reviewed file changes"}
+            label = labels.get(getattr(callback, "__name__", ""), "Reviewing library information")
+            with self.activity.track("library", label):
+                return callback(*args, **kwargs)
         finally:
             self.work_lock.release()
 
@@ -377,9 +400,56 @@ class Application:
         self.library_watcher.changed()
         return result
 
+    def file_change(self, callback, token, selections):
+        result = self.library_task(callback, token, selections)
+        self.library.invalidate()
+        self.library_watcher.changed()
+        self.relocation.clear()
+        self.inbox.clear()
+        self.library_audit.clear()
+        self.cue_planner.clear()
+        self.metadata_review.clear()
+        self.file_operations.clear()
+        return result
+
+    def plan_cues(self, entry_id, options):
+        if not isinstance(options, dict):
+            raise AppError("Choose valid cue planning options.")
+        if options.get("engine") == "cuegen":
+            return self.library_task(self.cuegen.plan, entry_id, options)
+        clean = dict(options)
+        if clean.pop("engine", "xml") != "xml":
+            raise AppError("Choose XML grid spacing or CueGen.")
+        return self.library_task(self.cue_planner.plan, entry_id, clean)
+
     def library_watch_status(self):
         settings = self.store.settings()
         return {**self.library_watcher.status(), "enabled": settings["mode"] == "real" and settings["auto_library_refresh"]}
+
+    def activity_status(self):
+        result = self.activity.snapshot()
+        backups = self.backups.status()
+        watch = self.library_watch_status()
+        shop = self.lookup.status() if self.namespace() == "real" else StoreLookupQueue._idle()
+        if backups.get("running") and not any("backup" in item["label"].lower() or "backing" in item["label"].lower() for item in result["active"]):
+            result["active"].append({"id": "automatic-backup", "key": "backup", "label": "Backing up the Rekordbox database",
+                "phase": backups.get("message") or "Checking and copying the selected database", "running": True, "blocks_settings": True})
+        if watch.get("running") and not result["active"]:
+            result["active"].append({"id": "automatic-library", "key": "library", "label": "Refreshing the library automatically",
+                "phase": watch.get("message") or "Reading media and XML", "running": True, "blocks_settings": True})
+        if shop.get("running"):
+            result["active"].append({"id": "shop-lookup", "key": "shops", "label": "Finding shop matches",
+                "phase": shop.get("current_track") or shop.get("message") or "Waiting for the next provider request",
+                "completed": shop.get("completed", 0), "total": shop.get("total", 0), "unit": "tracks",
+                "running": True, "blocks_settings": False})
+        result["running"] = bool(result["active"])
+        result["settings_blocked"] = any(item.get("blocks_settings") for item in result["active"])
+        return result
+
+    def busy_message(self):
+        active = self.activity_status()["active"]
+        label = next((item["label"] for item in active if item.get("blocks_settings")), "Another library action")
+        return "%s is running. Follow its progress in Activity, then try this change again." % label
 
     def _automatic_library_refresh(self, expected, media, xml):
         if self._closing or not self.work_lock.acquire(blocking=False):
@@ -403,6 +473,7 @@ class Application:
         self.library.invalidate()
         return check_setup(self.store.settings(), self.library, self.library_watch_status())
 
+    @reported("inbox", "Scanning the Incoming folder")
     def inbox_preview(self):
         if not self.work_lock.acquire(blocking=False):
             raise AppError("Another library action is running. Try the inbox again shortly.", 409)
@@ -411,6 +482,7 @@ class Application:
         finally:
             self.work_lock.release()
 
+    @reported("inbox", "Confirming downloaded files")
     def inbox_apply(self, token, selections):
         if not self.work_lock.acquire(blocking=False):
             raise AppError("Another library action is running. Try confirming the inbox links again shortly.", 409)
@@ -464,6 +536,7 @@ class Application:
                 "library": library, "suggestions": suggestions,
                 "library_watch": self.library_watch_status(),
                 "backups": self.backups.status(),
+                "activity": self.activity_status(),
                 "relocation": {"previous_music_root": settings.get("previous_music_root", "") if namespace == "real" else "",
                                "limit": RELOCATION_LIMIT},
                 "store_job": self.lookup.status() if namespace == "real" else StoreLookupQueue._idle(),
@@ -480,16 +553,31 @@ class Application:
                                  "library_audit": True, "duplicate_verification": True,
                                  "rekordbox_backups": True, "cue_planning": True,
                                  "preview_audio": "assets/download-on-itunes.svg" in self.assets,
-                                 "cue_generation": False, "rekordbox_xml_export": True, "file_moves": False,
+                                 "local_audio_preview": True, "library_workspace": True,
+                                 "metadata_review": True, "file_operations": True,
+                                 "cue_generation": self.cuegen.status().get("supported", False),
+                                 "rekordbox_xml_export": True, "file_moves": True,
                                  "rekordbox_database_writes": False}}
 
     def change_settings(self, updates):
-        if not self.work_lock.acquire(blocking=False):
-            raise AppError("A refresh or scan is running. Wait before changing settings.", 409)
-        try:
-            return self._change_settings(updates)
-        finally:
-            self.work_lock.release()
+        with self.settings_lock:
+            if not isinstance(updates, dict) or set(updates) - set(DEFAULTS):
+                raise AppError("Only the displayed settings can be changed.")
+            old = self.store.settings()
+            changed = {key: value for key, value in updates.items() if type(value) is not type(old.get(key)) or value != old.get(key)}
+            if not changed:
+                return {"saved": True, "unchanged": True}
+            # Connecting Spotify must not wait for unrelated disk reads. Folder
+            # changes still serialize with all reviewed library/file operations.
+            spotify_only = set(changed) <= {"spotify_client_id", "playlist_url", "auto_store_lookup"}
+            if spotify_only and not self.activity.running("spotify"):
+                return self._change_settings(changed)
+            if not self.work_lock.acquire(blocking=False):
+                raise AppError(self.busy_message(), 409)
+            try:
+                return self._change_settings(changed)
+            finally:
+                self.work_lock.release()
 
     def _change_settings(self, updates):
         if not isinstance(updates, dict) or set(updates) - set(DEFAULTS):
@@ -512,9 +600,9 @@ class Application:
             if old["source_id"] and source != old["source_id"]:
                 raise AppError("This collection is linked to another playlist. Keep its original playlist link.", 409)
             clean["playlist_url"] = url
-        for key in ("music_root", "rekordbox_db", "rekordbox_xml", "download_root", "rekordbox_backup_root"):
+        for key in ("music_root", "rekordbox_db", "rekordbox_xml", "download_root", "rekordbox_backup_root", "cuegen_path", "rekordbox_analysis_root"):
             if key in clean:
-                if key in ("rekordbox_db", "rekordbox_xml", "download_root", "rekordbox_backup_root") and not clean[key]:
+                if key in ("rekordbox_db", "rekordbox_xml", "download_root", "rekordbox_backup_root", "cuegen_path", "rekordbox_analysis_root") and not clean[key]:
                     continue
                 if not clean[key] or not Path(clean[key]).expanduser().is_absolute():
                     raise AppError("Use an absolute folder/file path for " + key.replace("_", " ") + ".")
@@ -542,6 +630,8 @@ class Application:
             self.inbox.clear()
         self.library_audit.clear()
         self.cue_planner.clear()
+        self.file_operations.clear()
+        self.metadata_review.clear()
         self.library_watcher.changed()
         if clean.get("auto_store_lookup") is False:
             self.lookup.cancel()
@@ -574,11 +664,12 @@ class Application:
                 self.last_auth_error = str(error)
                 raise
 
+    @reported("spotify", "Refreshing the Spotify playlist")
     def sync(self):
         if self.namespace() != "real":
             raise AppError("Leave the demo to refresh your Spotify playlist.", 409)
         if not self.work_lock.acquire(blocking=False):
-            raise AppError("Another refresh or scan is running. Please wait for it to finish.", 409)
+            raise AppError(self.busy_message(), 409)
         try:
             settings = self.store.settings()
             source, _ = parse_source(settings["playlist_url"])
@@ -727,6 +818,10 @@ class Application:
                 parsed = urlsplit(value)
                 if parsed.scheme not in ("https", "http") or not parsed.netloc or parsed.username or parsed.password:
                     raise AppError("Use an http or https purchase link.")
+            if key == "purchase_price" and value and not re.fullmatch(r"(?:0|[1-9][0-9]{0,4})(?:\.[0-9]{1,2})?", value):
+                raise AppError("Enter a non-negative price with at most two decimal places, without a currency symbol.")
+            if key == "purchase_currency" and not re.fullmatch(r"[A-Z]{3}", value):
+                raise AppError("Use a three-letter currency code, such as GBP.")
             if key == "local_file" and value and namespace == "real":
                 if value != previous.get("local_file", ""):
                     value = str(self._prepare_checked_link(value))
@@ -754,11 +849,12 @@ class Application:
     def suggestions(self):
         return self.library.matches(self.store.rows("real"), self.store.settings()["music_root"])
 
+    @reported("scan", "Scanning music files")
     def scan(self):
         if self.namespace() != "real":
             raise AppError("Leave the demo before scanning your SSD.", 409)
         if not self.work_lock.acquire(blocking=False):
-            raise AppError("Another refresh or scan is running. Please wait.", 409)
+            raise AppError(self.busy_message(), 409)
         try:
             _, root, root_identity = file_root(self.store.settings()["music_root"])
             files, skipped, scan_errors, metadata, visited = [], 0, [], {}, 0
@@ -786,6 +882,7 @@ class Application:
                         skipped += 1
                         continue
                     path = str(root / relative)
+                    self.activity.update(phase="Reading audio tags", completed=len(files), unit="files", message="Counting files as folders are read; a total is not available yet.")
                     details = self.library.cached_audio_metadata(path, str(root))
                     if details is None:
                         details = read_audio_metadata(path, str(root))
@@ -805,6 +902,7 @@ class Application:
             except OSError:
                 raise AppError("The music folder changed or disconnected during scanning. The previous inventory is kept; reconnect and retry.", 409) from None
             with self.store.connect() as db:
+                self.activity.update(phase="Saving the refreshed inventory", completed=len(files), total=len(files), unit="files")
                 existing = {r[0] for r in db.execute("SELECT path FROM files WHERE root=?", (str(root),))}
                 seen = set()
                 for path, root_name, size, mtime, title in files:
@@ -829,6 +927,7 @@ class Application:
             self.library.invalidate()
             self.work_lock.release()
 
+    @reported("xml", "Reading the Rekordbox XML")
     def import_xml(self, xml, source_name="Uploaded XML"):
         if self.namespace() != "real":
             raise AppError("Leave the demo to import your Rekordbox inventory.", 409)
@@ -841,6 +940,7 @@ class Application:
         finally:
             self.work_lock.release()
 
+    @reported("refresh", "Refreshing the music library")
     def refresh_libraries(self, media=True, xml=True):
         if not isinstance(media, bool) or not isinstance(xml, bool) or not (media or xml):
             raise AppError("Choose the media folder, Rekordbox XML, or both to refresh.")
@@ -860,6 +960,7 @@ class Application:
                     result["errors"].append({"source": "media", "message": str(error)})
             if xml:
                 try:
+                    self.activity.update(phase="Reading the Rekordbox XML")
                     settings = self.store.settings()
                     if not settings["rekordbox_xml"]:
                         raise AppError("Set your Rekordbox XML path in Settings for one-click refresh, or choose Import XML.")
@@ -895,7 +996,7 @@ class Application:
         if page < 1 or page > 50000 or size < 1 or size > 100:
             raise AppError("Choose a positive page and a page size from 1 to 100.")
         filter_name = parameters.get("filter", ["all"])[0]
-        if filter_name not in ("all", "missing", "duplicates"):
+        if filter_name not in ("all", "missing", "duplicates", "metadata"):
             raise AppError("Choose a valid library filter.")
         return self.library.review(self.store.rows("real"), self.store.settings()["music_root"],
                                    query=query, page=page, page_size=size, filter_name=filter_name)
@@ -973,12 +1074,30 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-DJList-Version", VERSION)
         self.send_header("X-DJList-Build", self.app.build_id)
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://i.scdn.co https://is1-ssl.mzstatic.com https://is2-ssl.mzstatic.com https://is3-ssl.mzstatic.com https://is4-ssl.mzstatic.com https://is5-ssl.mzstatic.com; media-src https://audio-ssl.itunes.apple.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://i.scdn.co https://is1-ssl.mzstatic.com https://is2-ssl.mzstatic.com https://is3-ssl.mzstatic.com https://is4-ssl.mzstatic.com https://is5-ssl.mzstatic.com; media-src 'self' blob: https://audio-ssl.itunes.apple.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         for name, value in (extra or {}).items():
             self.send_header(name, value)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(payload)
+
+    def send_audio(self, parameters):
+        if set(parameters) != {"entry_id"} or len(parameters["entry_id"]) != 1:
+            raise AppError("Choose one indexed audio file to preview.")
+        with self.app.local_media.open(parameters["entry_id"][0], self.headers.get("Range")) as stream:
+            self.send_response(stream.status)
+            for name, value in stream.headers.items():
+                self.send_header(name, str(value))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            if self.command != "HEAD":
+                try:
+                    for chunk in stream.iter_chunks():
+                        self.wfile.write(chunk)
+                except (OSError, AppError):
+                    self.close_connection = True
 
     def verify_request(self, mutation=False):
         if self.headers.get("Host") != "127.0.0.1:%d" % self.app.port:
@@ -1036,6 +1155,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_data(200, self.app.health())
                 if path == "/api/state":
                     return self.send_data(200, self.app.state())
+                if path == "/api/activity":
+                    return self.send_data(200, self.app.activity_status())
+                if path == "/api/library-audio":
+                    try:
+                        parameters = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=1)
+                    except ValueError:
+                        raise AppError("Choose one indexed audio file to preview.") from None
+                    return self.send_audio(parameters)
+                if path == "/api/file-operations":
+                    return self.send_data(200, self.app.library_task(self.app.file_operations.history))
+                if path == "/api/cuegen/status":
+                    return self.send_data(200, self.app.cuegen.status())
                 if path == "/api/store-job":
                     return self.send_data(200, self.app.lookup.status() if self.app.namespace() == "real" else StoreLookupQueue._idle())
                 if path == "/api/library-watch":
@@ -1112,7 +1243,33 @@ class Handler(BaseHTTPRequestHandler):
             elif self.command == "POST" and path == "/api/cues/plan":
                 if set(data) - {"entry_id", "options"} or "entry_id" not in data:
                     raise AppError("Choose a library track and cue spacing.")
-                result = self.app.library_task(self.app.cue_planner.plan, data.get("entry_id"), data.get("options", {}))
+                result = self.app.plan_cues(data.get("entry_id"), data.get("options", {}))
+            elif self.command == "POST" and path == "/api/file-operations/preview":
+                if set(data) - {"action", "entry_ids", "options"} or not {"action", "entry_ids"} <= set(data):
+                    raise AppError("Choose an action and explicit library files to review.")
+                result = self.app.library_task(self.app.file_operations.preview, data.get("action"), data.get("entry_ids"), data.get("options", {}))
+            elif self.command == "POST" and path == "/api/file-operations/apply":
+                if set(data) != {"token", "selected_ids"}:
+                    raise AppError("Choose files from a fresh file-change review.")
+                result = self.app.file_change(self.app.file_operations.apply, data.get("token"), data.get("selected_ids"))
+            elif self.command == "POST" and path == "/api/file-operations/undo-preview":
+                if set(data) != {"operation_id"}:
+                    raise AppError("Choose one saved file operation to review.")
+                result = self.app.library_task(self.app.file_operations.undo_preview, data.get("operation_id"))
+            elif self.command == "POST" and path == "/api/file-operations/undo":
+                if set(data) != {"token", "selected_ids"}:
+                    raise AppError("Choose files from a fresh undo review.")
+                result = self.app.file_change(self.app.file_operations.undo_apply, data.get("token"), data.get("selected_ids"))
+            elif self.command == "POST" and path in {"/api/metadata/preview", "/api/metadata/reset-preview"}:
+                if set(data) != {"entry_ids"}:
+                    raise AppError("Choose library files to review their metadata.")
+                callback = self.app.metadata_review.reset_preview if path.endswith("reset-preview") else self.app.metadata_review.preview
+                result = self.app.library_task(callback, data.get("entry_ids"))
+            elif self.command == "POST" and path in {"/api/metadata/apply", "/api/metadata/reset"}:
+                if set(data) != {"token", "selected_ids"}:
+                    raise AppError("Choose metadata changes from a fresh review.")
+                callback = self.app.metadata_review.reset if path.endswith("reset") else self.app.metadata_review.apply
+                result = self.app.file_change(callback, data.get("token"), data.get("selected_ids"))
             elif self.command == "POST" and path == "/api/cues/export":
                 if set(data) != {"token", "selected_ids"}:
                     raise AppError("Select cue suggestions from a fresh plan.")
@@ -1186,11 +1343,13 @@ class Handler(BaseHTTPRequestHandler):
             payload = {"error": str(error)}
             if getattr(error, "code", None):
                 payload["code"] = error.code
-            self.send_data(error.status, payload)
+            content_range = getattr(error, "content_range", "")
+            extra = {"Content-Range": content_range} if error.status == 416 and re.fullmatch(r"bytes \*/[0-9]+", content_range) else None
+            self.send_data(error.status, payload, extra=extra)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception:
-            self.send_data(500, {"error": "DJList could not finish this action. Refresh the page and try again. Your audio files and Rekordbox database were not changed."})
+            self.send_data(500, {"error": "DJList could not finish this action. Check Activity and File history before retrying a file change. Your live Rekordbox database is never edited by DJList."})
 
 
 class LocalServer(ThreadingHTTPServer):
@@ -1235,7 +1394,7 @@ def main(argv=None):
     print("DJList %s — %s" % (VERSION, app.origin), flush=True)
     print("App folder: %s" % app.app_dir, flush=True)
     print("Your DJList records: %s" % app.store.directory, flush=True)
-    print("Spotify sign-in lasts for this run. Audio is read-only; database backups only copy bytes while Rekordbox is closed.", flush=True)
+    print("Spotify sign-in lasts for this run. File changes require review; the live Rekordbox database is never edited.", flush=True)
     if not args.no_browser:
         webbrowser.open(app.origin)
     try:

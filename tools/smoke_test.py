@@ -17,7 +17,8 @@ def main():
     source = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(source))
     sys.path.insert(0, str(source / "tests"))
-    from app import Store
+    from app import API_VERSION, Store
+    from library_inventory import _identity
     from test_audio_metadata import flac_bytes
     with tempfile.TemporaryDirectory(prefix="djlist-smoke-") as temporary:
         root = Path(temporary).resolve()
@@ -69,6 +70,9 @@ def main():
             "from catalog import CatalogClient\n"
             "from musicbrainz import MusicBrainzClient, PURCHASE_RELATION\n"
             "from rekordbox_backups import RekordboxBackups\n"
+            "from file_operations import FileOperations\n"
+            "app.FileOperations = lambda store, library: FileOperations(store, library, "
+            "process_checker=lambda: {'known':True,'running':[]})\n"
             "app.RekordboxBackups = lambda store, lock: RekordboxBackups(store, lock, "
             "process_checker=lambda: {'known':True,'running':[]}, platform='darwin')\n"
             "sample = {'kind':'song','trackId':1,'trackName':'Night Window (Original Mix)','artistName':'Example Artist',"
@@ -124,7 +128,7 @@ def main():
                     time.sleep(.05)
             assert status == 200, (status, body)
             health = json.loads(body)
-            assert health["app"] == "DJList" and health["api_version"] == 6
+            assert health["app"] == "DJList" and health["api_version"] == API_VERSION
             assert health["static_snapshot"] and health["build_id"]
             status, body = request("/api/state")
             assert status == 200
@@ -132,7 +136,10 @@ def main():
             token = state["csrf_token"]
             assert state["version"] == health["version"]
             new_actions = ("/api/backups/create", "/api/backups/verify", "/api/duplicates/verify", "/api/missing/preview",
-                           "/api/missing/apply", "/api/cues/plan", "/api/cues/export")
+                           "/api/missing/apply", "/api/cues/plan", "/api/cues/export",
+                           "/api/file-operations/preview", "/api/file-operations/apply", "/api/file-operations/undo-preview",
+                           "/api/file-operations/undo", "/api/metadata/preview", "/api/metadata/apply",
+                           "/api/metadata/reset-preview", "/api/metadata/reset")
             for endpoint in new_actions:
                 assert request(endpoint, "POST", {})[0] == 403, endpoint
             assert request("/api/demo", "POST", {"enabled": True}, token)[0] == 200
@@ -157,6 +164,12 @@ def main():
             inventory = json.loads(body)
             assert status == 200 and inventory["total"] == 1
             assert inventory["entries"][0]["bpm"] == "172"
+            assert json.loads(request("/api/activity")[1])["recent"]
+            assert request("/api/cuegen/status")[0] == 200
+            assert json.loads(request("/api/file-operations")[1])["operations"] == []
+            assert request("/api/library-audio?entry_id=" + inventory["entries"][0]["id"])[1] == original_bytes
+            assert request("/api/library-review?filter=metadata")[0] == 200
+            assert request("/api/metadata/preview", "POST", {"entry_ids": [inventory["entries"][0]["id"]]}, token)[0] == 200
             assert libraries["media"]["metadata_read"] == 1
             status, body = request("/api/setup-check")
             setup = json.loads(body)
@@ -224,6 +237,24 @@ def main():
             # DJList stores canonical file paths after its boundary checks.
             assert Path(saved_purchase["local_file"]) == purchase.resolve(), saved_purchase["local_file"]
             assert audio.read_bytes() == original_bytes and purchase.read_bytes() == purchased_bytes
+            # Exercise reviewed native file moves and undo across HTTP. Process
+            # checks are injected for these synthetic files, never production.
+            operation_entry_id = _identity(str(audio.resolve()))
+            for action, options in (("rename", {"names": {operation_entry_id: "renamed-review.flac"}}), ("remove", {})):
+                status, body = request("/api/file-operations/preview", "POST", {"action": action, "entry_ids": [operation_entry_id], "options": options}, token)
+                plan = json.loads(body)
+                assert status == 200 and plan["items"][0]["selectable"], (status, body)
+                changed_path = Path(plan["items"][0]["after"])
+                status, body = request("/api/file-operations/apply", "POST", {"token": plan["token"], "selected_ids": [operation_entry_id]}, token)
+                assert status == 200 and not audio.exists() and changed_path.read_bytes() == original_bytes, (status, body)
+                changed_operation = json.loads(body)["operation_id"]
+                operation = next(row for row in json.loads(request("/api/file-operations")[1])["operations"] if row["id"] == changed_operation)
+                status, body = request("/api/file-operations/undo-preview", "POST", {"operation_id": operation["id"]}, token)
+                undo = json.loads(body)
+                assert status == 200, (status, body)
+                status, body = request("/api/file-operations/undo", "POST", {"token": undo["token"], "selected_ids": [undo["items"][0]["entry_id"]]}, token)
+                assert status == 200 and audio.read_bytes() == original_bytes and not changed_path.exists(), (status, body)
+            assert database.read_bytes() == database_bytes and xml_path.read_bytes() == original_xml
             refresh_path = "/api/tracks/%s/refresh-store" % real_id
             assert request(refresh_path, "POST", {})[0] == 403
             status, body = request(refresh_path, "POST", {}, token)

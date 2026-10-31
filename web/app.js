@@ -2,9 +2,12 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const UI_VERSION = "0.6.0";
-const API_VERSION = 6;
+const UI_VERSION = "0.7.0";
+const API_VERSION = 7;
 let libraryTools = null;
+let libraryWorkspace = null;
+let activityView = null;
+let acquisition = null;
 const trackModel = window.DJListModel;
 const RESTART_MESSAGE = "Stop DJList in its Terminal window (Control+C), then open the updated launcher and reload this page.";
 const ITUNES_BADGE_PATH = "/assets/download-on-itunes.svg";
@@ -152,7 +155,11 @@ async function api(path, options = {}) {
   if (!response.ok) { const error = new Error(result.error || `The request failed (${response.status}).`); error.status = response.status; error.code = result.code; throw error; }
   return result;
 }
-function mutation(path, body = {}, method = "POST") { return api(path, {method, body: JSON.stringify(body)}); }
+function mutation(path, body = {}, method = "POST") {
+  const promise = api(path, {method, body: JSON.stringify(body)});
+  window.setTimeout(() => activityView?.poll(), 100);
+  return promise;
+}
 async function busy(button, task) {
   if (ui.busy.has(button)) return;
   ui.busy.add(button); const previous = button.disabled;
@@ -179,7 +186,7 @@ async function refresh() {
   ui.suggestions = new Map((data.suggestions || []).map(entry => [String(entry.track_id), entry.candidates || []]));
   ui.tracks = (data.tracks || []).map((track, index) => ({...normalize(track, index), _candidate_count: (ui.suggestions.get(String(track.id)) || []).length}));
   libraryWatchUI.revision = data.library_watch?.revision ?? libraryWatchUI.revision;
-  render(); scheduleStorePoll(); scheduleLibraryWatch(); return data;
+  render(); scheduleStorePoll(); scheduleLibraryWatch(); activityView?.render(data.activity); activityView?.poll(); return data;
 }
 function render() {
   $("#loading-state").hidden = true;
@@ -205,6 +212,7 @@ function render() {
   renderLibrarySources(); renderStoreJob(ui.data.store_job || {}); renderLibraryWatch(ui.data.library_watch || {});
   updateControls(); renderTracks();
   libraryTools?.stateChanged(ui.data);
+  if (libraryWorkspace?.isOpen()) applyLibraryNavigation();
 }
 function renderDriveStatus() {
   const drive = ui.data.drive || {};
@@ -242,7 +250,7 @@ function updateControls() {
   if (pickerUI.pending) $("#authorize-button").disabled = true;
 }
 function filteredTracks() { return trackModel.select(ui.tracks, ui); }
-function setFilter(filter) { ui.filter = filter; ui.page = 1; if (ui.data) render(); }
+function setFilter(filter) { showWishlist(); ui.filter = filter; ui.page = 1; if (ui.data) render(); }
 function renderTracks() {
   const focused = document.activeElement;
   const focusId = focused?.dataset?.trackId;
@@ -337,6 +345,11 @@ function trackRow(track) {
     if (!savedURL) shop.append(el("small", "row-note", "iTunes · check the mix"));
   } else if (lookup.message) { const note = el("small", "row-note", lookup.message); shop.append(note); }
   row.append(shop);
+  const price = labelledCell("price-cell", "Price"), priceInfo = trackModel.price(track);
+  price.append(el("strong", "row-price", priceInfo ? displayPrice(priceInfo) : "Unknown"));
+  price.append(el("small", "row-note", priceInfo?.source || "Check shop"));
+  if (priceInfo?.checked_at) price.append(el("small", "row-note", checkedTime(priceInfo.checked_at)));
+  row.append(price);
   const file = labelledCell("file-cell", "My library"); const candidates = ui.suggestions.get(track.id) || [];
   const textStatus = track.local_file ? track.file_available ? "File linked" : "File unavailable" : candidates.length ? "Possible existing copy" : "No linked copy";
   const status = el("span", `file-status${track.local_file ? track.file_available ? " linked" : " missing" : candidates.length ? " possible" : ""}`, textStatus);
@@ -366,7 +379,9 @@ function trackRow(track) {
     const badge = el("span", "action-count", countLabel); badge.setAttribute("aria-hidden", "true"); reviewAction.append(badge);
     reviewAction.setAttribute("aria-label", `Review ${countLabel} possible library ${candidates.length === 1 ? "match" : "matches"} for ${track.title_and_version} by ${track.artists}`);
   }
-  group.append(reviewAction); actions.append(group); row.append(actions);
+  group.append(reviewAction);
+  group.append(rowAction(track, "purchase", "download", "Buy or confirm Incoming download", "Open purchase steps and confirm a downloaded file", button => acquisition?.open(track, button), unavailable));
+  actions.append(group); row.append(actions);
   return row;
 }
 function checkedTime(value) {
@@ -512,7 +527,7 @@ async function refreshStoreTracks(button, id = null) {
 }
 async function browsePath(button) {
   if (pickerUI.pending || !ui.runtimeCompatible) return;
-  const kind = {music_root: "music", rekordbox_xml: "xml", download_root: "downloads", rekordbox_db: "db", rekordbox_backup_root: "backups"}[button.dataset.picker];
+  const kind = {music_root: "music", rekordbox_xml: "xml", download_root: "downloads", rekordbox_db: "db", rekordbox_backup_root: "backups", cuegen:"cuegen", analysis:"analysis"}[button.dataset.picker];
   if (!kind) return;
   const epoch = pickerUI.epoch;
   pickerUI.pending = true; updateControls(); showError("#settings-error", "");
@@ -586,6 +601,12 @@ function openInbox(opener = document.activeElement) {
     showInboxEmpty("Choose an inbox folder", "In Folder settings, choose the folder where your purchased audio files are saved. Save that location, then open the inbox again.");
     updateInboxSelection();
   }
+}
+function openIncomingFor(track) {
+  openInbox();
+  inboxUI.query = String(track.title_and_version || "").split(/\s[([]/)[0];
+  $("#inbox-search").value = inboxUI.query;
+  $("#inbox-status").textContent = `Finding a downloaded file for ${track.title_and_version}. Check the recording and confirm its link.`;
 }
 function showInboxEmpty(title, description) {
   $("#inbox-empty").hidden = false; $("#inbox-empty-title").textContent = title; $("#inbox-empty-description").textContent = description;
@@ -717,7 +738,7 @@ async function applyInbox(event) {
   } finally { inboxUI.applying = false; updateInboxSelection(); updateControls(); }
 }
 
-function openLibraryReview(opener = document.activeElement) {
+function oldOpenLibraryReview(opener = document.activeElement) {
   libraryUI.opener = opener; libraryUI.page = 1; libraryUI.query = ""; libraryUI.filter = "all";
   $("#library-search").value = ""; $("#library-filter").value = "all";
   $("#library-entries").replaceChildren(); $("#library-duplicate-summary").hidden = true;
@@ -888,6 +909,8 @@ function openSettings() {
   $("#playlist-url").value = settings.playlist_url || "";
   $("#music-root").value = settings.music_root || "";
   $("#rekordbox-db").value = settings.rekordbox_db || "";
+  $("#cuegen-path").value = settings.cuegen_path || "";
+  $("#analysis-root").value = settings.rekordbox_analysis_root || "";
   $("#rekordbox-backup-root").value = settings.rekordbox_backup_root || "";
   $("#auto-rekordbox-backup").checked = settings.auto_rekordbox_backup !== false;
   $("#rekordbox-xml").value = settings.rekordbox_xml || "";
@@ -898,7 +921,8 @@ function openSettings() {
   $("#path-picker-status").textContent = pickerUI.pending ? "A file chooser is still open on your Mac. Finish or cancel it before choosing another location." : "";
   showError("#settings-error", ""); $("#settings-dialog").showModal(); updateControls();
 }
-function settingsValues() { return {spotify_client_id: $("#client-id").value.trim(), playlist_url: $("#playlist-url").value.trim(), music_root: $("#music-root").value.trim(), rekordbox_db: $("#rekordbox-db").value.trim(), rekordbox_xml: $("#rekordbox-xml").value.trim(), download_root: $("#download-root").value.trim(), auto_store_lookup: $("#auto-store-lookup").checked, auto_library_refresh: $("#auto-library-refresh").checked, rekordbox_backup_root: $("#rekordbox-backup-root").value.trim(), auto_rekordbox_backup: $("#auto-rekordbox-backup").checked}; }
+function openLibraryReview() { showLibraryWorkspace("all"); }
+function settingsValues() { return {cuegen_path: $("#cuegen-path").value.trim(), rekordbox_analysis_root: $("#analysis-root").value.trim(), spotify_client_id: $("#client-id").value.trim(), playlist_url: $("#playlist-url").value.trim(), music_root: $("#music-root").value.trim(), rekordbox_db: $("#rekordbox-db").value.trim(), rekordbox_xml: $("#rekordbox-xml").value.trim(), download_root: $("#download-root").value.trim(), auto_store_lookup: $("#auto-store-lookup").checked, auto_library_refresh: $("#auto-library-refresh").checked, rekordbox_backup_root: $("#rekordbox-backup-root").value.trim(), auto_rekordbox_backup: $("#auto-rekordbox-backup").checked}; }
 async function connectSpotify(button, saveSettings = false) {
   await busy(button, async () => {
     try {
@@ -921,10 +945,10 @@ function openTrack(id, opener = document.activeElement) {
   $("#detail-artist").textContent = track.artists;
   $("#detail-album").textContent = track.album || "";
   $("#detail-owned").checked = track.owned;
-  const values = {tags: track.tags, key: track.musical_key, bpm: track.bpm, energy: track.energy, notes: track.notes, purchase: track.purchase_url, file: track.local_file, cues: track.cue_notes};
+  const values = {tags: track.tags, key: track.musical_key, bpm: track.bpm, energy: track.energy, notes: track.notes, purchase: track.purchase_url, price: track.purchase_price || "", currency: track.purchase_currency || "GBP", file: track.local_file, cues: track.cue_notes};
   for (const [key, value] of Object.entries(values)) $("#detail-" + key).value = value ?? "";
   $("#detail-file").disabled = ui.data.mode === "demo";
-  $("#file-help").textContent = ui.data.mode === "demo" ? "Demo file paths are fictional. Link your audio files in your real collection." : "Link the purchased version. Files are never moved by DJList.";
+  $("#file-help").textContent = ui.data.mode === "demo" ? "Demo file paths are fictional. Link your audio files in your real collection." : "Link the purchased version. File links are changed here. Reviewed rename and removal actions are in My library.";
   const prep = $("#detail-prep"); if (prep) prep.value = track.prep_status || "wishlist";
   const facts = [];
   if (track.duration) facts.push(track.duration);
@@ -1401,7 +1425,7 @@ $("#track-form").addEventListener("submit", async event => {
   await busy(button, async () => {
     try {
       showError("#track-error", "");
-      const values = {owned: $("#detail-owned").checked, tags: $("#detail-tags").value.trim(), musical_key: $("#detail-key").value.trim(), bpm: $("#detail-bpm").value.trim(), energy: $("#detail-energy").value.trim(), purchase_url: $("#detail-purchase").value.trim(), notes: $("#detail-notes").value.trim(), cue_notes: $("#detail-cues").value.trim(), prep_status: $("#detail-prep").value, local_file: $("#detail-file").value.trim()};
+      const values = {owned: $("#detail-owned").checked, tags: $("#detail-tags").value.trim(), musical_key: $("#detail-key").value.trim(), bpm: $("#detail-bpm").value.trim(), energy: $("#detail-energy").value.trim(), purchase_url: $("#detail-purchase").value.trim(), purchase_price: $("#detail-price").value.trim(), purchase_currency: $("#detail-currency").value.trim().toUpperCase(), notes: $("#detail-notes").value.trim(), cue_notes: $("#detail-cues").value.trim(), prep_status: $("#detail-prep").value, local_file: $("#detail-file").value.trim()};
       const data = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== (key === "owned" ? track.owned : String(track[key] ?? ""))));
       if (!Object.keys(data).length) { closeTrackAndFocus(track.id); return; }
       await mutation(`/api/tracks/${encodeURIComponent(track.id)}`, data, "PATCH");
@@ -1483,9 +1507,10 @@ for (const dialog of $$("dialog")) dialog.addEventListener("close", () => window
 document.addEventListener("focusin", () => { if (ui.pendingRefresh) window.setTimeout(flushPendingRefresh, 0); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { flushPendingRefresh(); scheduleStorePoll(); scheduleLibraryWatch(); } else { window.clearTimeout(ui.pollTimer); window.clearTimeout(libraryWatchUI.timer); } });
 window.addEventListener("pagehide", () => { window.clearTimeout(ui.pollTimer); window.clearTimeout(libraryWatchUI.timer); window.clearTimeout(inboxUI.expires); });
+document.addEventListener("play", event => { if (event.target instanceof HTMLMediaElement) { for (const audio of document.querySelectorAll("audio")) if (audio !== event.target) audio.pause(); if (providerUI.audio && providerUI.audio !== event.target) providerUI.audio.pause(); } }, true);
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && !$("#row-action-tooltip").hidden) { hideRowTooltip(true); event.preventDefault(); return; }
-  if (event.key === "/" && !event.ctrlKey && !event.metaKey && !$("dialog[open]") && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) { event.preventDefault(); $("#track-search").focus(); }
+  if (event.key === "/" && !event.ctrlKey && !event.metaKey && !$("dialog[open]") && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) { event.preventDefault(); $(libraryWorkspace?.isOpen()?"#workspace-library-search":"#track-search")?.focus(); }
 });
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
@@ -1496,9 +1521,43 @@ function setTheme(theme) {
 $("#theme-toggle").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
 try { setTheme(localStorage.getItem("djlist-theme") || "dark"); } catch { setTheme("dark"); }
 
-libraryTools = window.DJLibraryTools.init({api, mutation, refresh, openSettings, el, icon, toast,
+function applyLibraryNavigation() {
+  $("#main").hidden = true; $("#library-workspace-root").hidden = false;
+  $("#breadcrumb-view").textContent = "My library";
+  for (const item of $$(".nav-item[data-filter]")) { item.classList.remove("active"); item.removeAttribute("aria-current"); }
+  $("#library-workspace-nav").classList.add("active"); $("#library-workspace-nav").setAttribute("aria-current", "page");
+  $(".skip-link").href = "#library-workspace-root";
+}
+function showLibraryWorkspace(section = "all", fromHash = false) {
+  if (!ui.data || ui.data.mode !== "real" || !ui.runtimeCompatible) { if(ui.data) toast("Open your real collection to review library files.", true); return; }
+  applyLibraryNavigation();
+  if (!fromHash) history.pushState(null, "", `#library/${section}`);
+  libraryWorkspace?.open(section);
+  $("#library-workspace-root").focus({preventScroll:true});
+}
+function showWishlist(fromHash = false) {
+  libraryWorkspace?.close(); $("#main").hidden = false; $("#library-workspace-root").hidden = true;
+  $("#library-workspace-nav").classList.remove("active"); $("#library-workspace-nav").removeAttribute("aria-current");
+  $(".skip-link").href = "#main";
+  if (!fromHash && location.hash.startsWith("#library")) history.pushState(null, "", "#wishlist");
+}
+function routeWorkspace() {
+  const match = location.hash.match(/^#library(?:\/(all|duplicates|missing|metadata|history))?$/);
+  if (match) showLibraryWorkspace(match[1] || "all", true);
+  else { showWishlist(true); if(ui.data) render(); }
+}
+window.addEventListener("hashchange",routeWorkspace);
+$("#library-workspace-nav").addEventListener("click",()=>showLibraryWorkspace());
+$("#purchase-list-button").addEventListener("click",event=>acquisition?.open(null,event.currentTarget));
+activityView = window.DJListActivity.init({api,getData:()=>ui.data,onChange:data=>{if(ui.data)ui.data.activity=data;}});
+acquisition = window.DJListAcquisition.init({getTracks:()=>ui.tracks,getData:()=>ui.data,mutation,refresh,openInbox:openIncomingFor,
+  openSearch:track=>{openTrack(track.id);openProviderSearch(ui.selected,$("#detail-find-downloads"));},openTrack,displayPrice,toast});
+libraryWorkspace = window.DJListLibraryWorkspace.init({root:$("#library-workspace-root"),api,mutation,refresh,getData:()=>ui.data,isCompatible:()=>ui.runtimeCompatible,
+  onCuePlan:(entry,opener)=>libraryTools?.openCue(entry,opener),onFindMissing:(id,opener)=>libraryTools?.openRepair(id,opener),
+  onSettings:openSettings,onWishlist:()=>{showWishlist();render();},onSectionChange:section=>{if(location.hash!==`#library/${section}`)history.replaceState(null,"",`#library/${section}`);},toast});
+libraryTools = window.DJLibraryTools.init({api, mutation, refresh, openSettings, el, icon, toast,onLibraryHealth:()=>showLibraryWorkspace("missing"),
   getData: () => ui.data, getCsrf: () => ui.csrf, isCompatible: () => ui.runtimeCompatible});
-refresh().catch(error => {
+refresh().then(()=>routeWorkspace()).catch(error => {
   $("#loading-state").hidden = true; $("#empty-state").hidden = false;
   $("#empty-title").textContent = "DJList could not load";
   $("#empty-description").textContent = error.message;

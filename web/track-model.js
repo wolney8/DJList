@@ -47,6 +47,14 @@
   }
   function status(track) { return track.store_lookup?.status || "not_checked"; }
   function statusLabel(track) { return statuses[status(track)] || "Not checked"; }
+  function price(track) {
+    const saved = String(track.purchase_price ?? "").trim(), currency = String(track.purchase_currency || "GBP");
+    if (/^(?:0|[1-9][0-9]{0,4})(?:\.[0-9]{1,2})?$/.test(saved) && /^[A-Z]{3}$/.test(currency))
+      return {amount: Number(saved), currency, source: "Your recorded price", confirmed: true};
+    const offer = storeOffer(track), value = offer?.price;
+    if (!value || typeof value.amount !== "number" || !Number.isFinite(value.amount) || value.amount < 0 || !/^[A-Z]{3}$/.test(value.currency || "")) return null;
+    return {...value, source: `${offer.provider_name || "Shop"} candidate`, checked_at: offer.checked_at || track.store_lookup?.checked_at, confirmed: false};
+  }
   function compareKnown(a, b, numeric = false) {
     if (numeric) {
       const x = Number(a), y = Number(b);
@@ -85,6 +93,10 @@
       if (options.sort === "bpm") return compareKnown(metadata(a).bpm, metadata(b).bpm, true) || stable(a, b);
       if (options.sort === "key") return compareKnown(metadata(a).key, metadata(b).key) || stable(a, b);
       if (options.sort === "store") return (storeOrder[status(a)] ?? 7) - (storeOrder[status(b)] ?? 7) || stable(a, b);
+      if (options.sort === "price") {
+        const x = price(a), y = price(b);
+        return x && y ? x.currency.localeCompare(y.currency) || x.amount - y.amount || stable(a, b) : x ? -1 : y ? 1 : stable(a, b);
+      }
       return Number(b._order || 0) - Number(a._order || 0);
     });
     return filtered;
@@ -97,5 +109,5 @@
     return {items: tracks.slice(start, start + size), total: tracks.length, page: current,
       pages, pageSize: size, start: tracks.length ? start + 1 : 0, end: Math.min(start + size, tracks.length)};
   }
-  return {storeOffer, tags, metadata, artworkURL, tone, status, statusLabel, select, paginate};
+  return {storeOffer, tags, metadata, artworkURL, tone, status, statusLabel, price, select, paginate};
 });

@@ -29,7 +29,7 @@ MAX_PLANS = 20
 MAX_MARKERS = 4096
 MAX_GRID_BARS = 100000
 MAX_TRACK_BYTES = 256 * 1024
-EXPORT_VERSION = "0.6.0"
+EXPORT_VERSION = "0.7.0"
 OPTIONS = {"interval_bars", "max_cues", "bpm", "first_downbeat_seconds", "confirm_manual_grid"}
 
 
@@ -351,9 +351,106 @@ class CuePlanner:
             self._plans[token] = {**source, "deadline": now + PLAN_SECONDS, "public": deepcopy(public)}
         return public
 
+    def accept_external(self, source, proposals, options, warnings=None, validator=None):
+        """Store bounded CueGen suggestions against the same refreshed XML source.
+
+        External processes never receive this planner's XML output path. Existing
+        markers remain untouched; only reviewed, unused slots can be exported.
+        """
+        if not isinstance(source, dict) or not isinstance(proposals, list) or len(proposals) > 100:
+            raise CuePlannerError("CueGen returned an invalid or oversized suggestion list.", "invalid_engine_output")
+        self._revalidate(source)
+        if validator:
+            validator()
+        existing, occupied = _cues(source["track"], source["duration"])
+        grid = _grid(source["track"], source["duration"])
+        maximum = _integer(options.get("max_cues", 8), "maximum CueGen suggestions", 1, 10)
+        cue_type = options.get("cue_type", "hot")
+        if cue_type not in {"hot", "memory"} or (cue_type == "hot" and maximum > 8):
+            raise CuePlannerError("Choose up to eight hot cues or ten memory cues.", "invalid_options", 400)
+        minimum = _integer(options.get("min_distance_bars", 4), "minimum cue spacing", 0, 128)
+        positions = _bar_positions(grid, source["duration"]) if grid else []
+        boundaries = [row[key] for row in existing for key in ("time", "end") if row[key] is not None]
+        accepted, skipped, seen = [], 0, set()
+        for raw in proposals:
+            if not isinstance(raw, dict):
+                raise CuePlannerError("CueGen returned an invalid suggestion.", "invalid_engine_output")
+            start = _number(raw.get("time"), "CueGen cue position", 0, source["duration"])
+            if start >= source["duration"]:
+                raise CuePlannerError("CueGen placed a cue outside this XML track's duration.", "invalid_engine_output")
+            slot = _integer(raw.get("slot"), "CueGen slot", -1, 7)
+            if (cue_type == "memory") != (slot == -1):
+                raise CuePlannerError("CueGen returned the wrong cue type.", "invalid_engine_output")
+            end = raw.get("end")
+            if end is not None:
+                end = _number(end, "CueGen loop end", start, source["duration"])
+                if end <= start:
+                    raise CuePlannerError("CueGen returned an invalid loop.", "invalid_engine_output")
+            name = raw.get("name", "CueGen cue")
+            if (not isinstance(name, str) or len(name) > 200
+                    or any(ord(char) < 32 or ord(char) == 127 for char in name)):
+                raise CuePlannerError("CueGen returned an invalid cue label.", "invalid_engine_output")
+            colour = raw.get("rgb")
+            if colour is not None and (not isinstance(colour, (list, tuple)) or len(colour) != 3
+                    or any(isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 255 for value in colour)):
+                raise CuePlannerError("CueGen returned an invalid cue colour.", "invalid_engine_output")
+            identity = (round(start, 6), slot, end)
+            if identity in seen:
+                raise CuePlannerError("CueGen returned repeated suggestions.", "invalid_engine_output")
+            seen.add(identity)
+            collision = any(abs(start - other) <= .001 for other in boundaries)
+            if positions and minimum:
+                at = _bar_coordinate(positions, start)
+                collision = collision or any(abs(at - _bar_coordinate(positions, other)) < minimum - 1e-7 for other in boundaries)
+            if collision or (slot >= 0 and slot in occupied):
+                skipped += 1
+                continue
+            if len(accepted) >= maximum:
+                break
+            row = {"id": "external-" + str(len(accepted)), "name": name or "CueGen cue",
+                   "time": round(start, 6), "slot": slot, "cue_type": cue_type,
+                   "type": 4 if end is not None else 0, "source": "cuegen"}
+            if end is not None:
+                row["end"] = round(end, 6)
+            if colour is not None:
+                row["rgb"] = list(colour)
+            accepted.append(row)
+            boundaries.append(start)
+            if end is not None:
+                boundaries.append(end)
+            if slot >= 0:
+                occupied.add(slot)
+        notes = list(warnings or []) + [
+            "CueGen suggestions use existing Rekordbox phrase or Mixed In Key data. Listen to every selected marker.",
+            "Existing XML cues, loops and beatgrid information are preserved. No live database changes are applied.",
+            "XML can describe a loop's start and end, but cannot guarantee that Rekordbox imports its active-loop flag.",
+            "Use Rekordbox's full Backup Library before importing. Import behaviour on your installed version is unverified."]
+        if skipped:
+            notes.append(str(skipped) + " CueGen suggestions were skipped to preserve occupied XML slots or nearby existing markers.")
+        if not accepted:
+            notes.append("No additional safe suggestions remain. Existing XML markers are preserved.")
+        self._revalidate(source)
+        if validator:
+            validator()
+        token, current_time = secrets.token_urlsafe(32), self.clock()
+        public = {"token": token, "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=PLAN_SECONDS)).isoformat(timespec="seconds"),
+                  "entry_id": source["entry_id"], "track": {"title": source["track"].get("Name") or source["entry"]["title"],
+                  "artist": source["track"].get("Artist", ""), "path": source["entry"]["path"], "duration_seconds": source["duration"]},
+                  "engine": "cuegen", "grid_source": "rekordbox_xml", "grid": grid,
+                  "existing_cues": existing, "suggestions": accepted, "warnings": notes,
+                  "options": deepcopy(options), "selected_count": 0, "export_kind": "rekordbox_xml",
+                  "source_name": Path(source["config"][2]).name}
+        with self._lock:
+            self._plans = {key: value for key, value in self._plans.items() if value["deadline"] > current_time}
+            while len(self._plans) >= MAX_PLANS:
+                self._plans.pop(next(iter(self._plans)))
+            self._plans[token] = {**source, "deadline": current_time + PLAN_SECONDS,
+                                  "public": deepcopy(public), "external_validator": validator}
+        return public
+
     def export(self, token, selected_ids):
         if (not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{40,64}", token)
-                or not isinstance(selected_ids, list) or not 1 <= len(selected_ids) <= 8
+                or not isinstance(selected_ids, list) or not 1 <= len(selected_ids) <= 10
                 or any(not isinstance(value, str) for value in selected_ids)
                 or len(set(selected_ids)) != len(selected_ids)):
             raise CuePlannerError("Select one or more reviewed cue suggestions before exporting.", "invalid_selection", 400)
@@ -361,6 +458,11 @@ class CuePlanner:
             plan = self._plans.pop(token, None)
         if plan is None or self.clock() >= plan["deadline"]:
             raise CuePlannerError("This cue review has expired or was used. Make a new plan.", "stale_plan")
+        if len(selected_ids) > (10 if plan["public"].get("engine") == "cuegen" else 8):
+            raise CuePlannerError("Choose no more than eight grid hot cues.", "invalid_selection", 400)
+        validator = plan.get("external_validator")
+        if validator:
+            validator()
         choices = {row["id"]: row for row in plan["public"]["suggestions"]}
         if any(value not in choices for value in selected_ids):
             raise CuePlannerError("Choose only the suggestions from this cue plan.", "invalid_selection", 400)
@@ -374,8 +476,14 @@ class CuePlanner:
             element = ET.Element("TEMPO", {"Inizio": _seconds(grid["time"]), "Bpm": _seconds(grid["bpm"]), "Metro": "4/4", "Battito": "1"})
             track.insert(0, element)
         selected = [choices[value] for value in selected_ids]
-        for choice in sorted(selected, key=lambda row: row["slot"]):
-            ET.SubElement(track, "POSITION_MARK", {"Name": choice["name"], "Type": "0", "Start": _seconds(choice["time"]), "Num": str(choice["slot"])})
+        for choice in sorted(selected, key=lambda row: (row["slot"], row["time"])):
+            attributes = {"Name": choice["name"], "Type": str(choice.get("type", 0)),
+                          "Start": _seconds(choice["time"]), "Num": str(choice["slot"])}
+            if choice.get("end") is not None:
+                attributes["End"] = _seconds(choice["end"])
+            if choice.get("rgb") is not None:
+                attributes.update({key: str(value) for key, value in zip(("Red", "Green", "Blue"), choice["rgb"])})
+            ET.SubElement(track, "POSITION_MARK", attributes)
         document = ET.Element("DJ_PLAYLISTS", {"Version": "1.0.0"})
         ET.SubElement(document, "PRODUCT", {"Name": "DJList cue review", "Version": EXPORT_VERSION, "Company": "DJList"})
         collection = ET.SubElement(document, "COLLECTION", {"Entries": "1"})
@@ -386,6 +494,8 @@ class CuePlanner:
         ET.SubElement(playlist, "TRACK", {"Key": track.get("Location")})
         payload = ET.tostring(document, encoding="utf-8", xml_declaration=True)
         self._revalidate(current)
+        if validator:
+            validator()
         # Keep generated names independent of artist/title/path text and never
         # return a destination that could overwrite a source export.
         filename = "DJList-cue-review-" + plan["entry_id"][:8] + "-" + secrets.token_hex(4) + ".xml"

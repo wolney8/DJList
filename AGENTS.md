@@ -1,7 +1,8 @@
 # DJList operating rules
 
-Current implementation: **0.6.0 / API 6**. These rules include the narrowly
-scoped raw database-snapshot reader and reviewed XML cue export described below.
+Current implementation: **0.7.0 / API 7**. These rules cover the local library
+workspace, reviewed reversible audio-file operations, checked database snapshots
+and isolated CueGen-to-XML review described below.
 
 ## Product goal
 
@@ -34,10 +35,14 @@ Rekordbox library, annotations and audio files.
   and supported companion file solely for cold database snapshots. Require the
   Mac process/locking checks, bounded reads, stable source identity and checked
   copies in a separate destination; default to DJList's own data folder.
-- Do not open a SQLite/SQLCipher connection to Rekordbox, query its records,
-  recover/checkpoint journals, write to its database or execute CueGen. A future
-  read-only record adapter needs version compatibility, connection-level write
-  prevention and a consistent view of the chosen database or snapshot.
+- Never open a SQLite/SQLCipher connection to the live Rekordbox database,
+  recover/checkpoint its journals or write to it. An independently configured
+  CueGen 1.0.37 may open only an exclusive working copy of a freshly checked
+  retained snapshot, inside the mandatory macOS sandbox. Deny network access,
+  source database access and source audio/analysis writes. Keep runtime caches
+  inside the work directory and never run an unsandboxed fallback. Check exact
+  version, selected track, bounded output and completion before accepting cues.
+  A future direct record adapter still needs a separate compatibility review.
 - Database snapshots are not full library backups. Keep existing snapshots,
   report incomplete copies and never add deletion, overwrite or restore behavior
   to the current workflow. Daily checks run only while DJList is open and
@@ -85,6 +90,23 @@ Rekordbox library, annotations and audio files.
   Read eligible files only inside the selected music root, enforce read/time
   limits, and invalidate cached hashes when file identity changes. Different
   bytes do not prove different audio; no deletion or merge follows a match.
+- File changes require a separate fresh review and explicit selections, at most
+  50 files. Permit indexed audio inside available selected roots only, with
+  verified closed library-writing processes, fingerprint revalidation and
+  native atomic no-overwrite moves. Never add a replacing-rename fallback.
+  Removal moves to the same drive's `.djlist-removed` directory; no permanent
+  deletion. Retain a durable journal, safe rollback and reviewed undo. Show
+  incomplete recovery honestly. Keep source XML/master.db unchanged and explain
+  that Rekordbox locations need separate relocation after a rename.
+- Distinguish zero XML cues from unknown or stale cue evidence for every copy.
+  Do not automatically select a duplicate for removal based on cue counts.
+- Metadata corrections require reviewed before/after fields and a fresh token.
+  Store corrections only in DJList; retain source metadata and support reset.
+  Never change Spotify recording identity or embedded tags in this workflow.
+- Stream local previews only by indexed ID and within selected folder boundaries.
+  Reject unsafe links and special files, revalidate streaming sources, bound
+  reads and support single byte ranges. Load waveforms after a user gesture,
+  respect size/duration limits and show a native playback fallback where possible.
 - Cue reviews require a saved, refreshed XML source and an available selected
   track whose identity still matches the audio fingerprint saved on XML import.
   Older or offline-at-import records require a new refresh with the drive present.
@@ -111,6 +133,13 @@ Rekordbox library, annotations and audio files.
 - Keep track rows within the viewport; use pagination and responsive cards
   instead of horizontal table scrolling. Keep actions reachable at small widths.
 - Label unverified store searches and planned features clearly.
+- Show running background work persistently, including its name and elapsed
+  time. Show percentages only with real totals. Unchanged settings and Spotify
+  connection changes must not wait for unrelated disk scans; folder changes
+  and active Spotify refreshes keep their relevant serialization guards.
+- Keep candidate prices, provider/check time and recorded prices distinct.
+  Never imply that opening a shop pays for or downloads a track. Confirm an
+  actual Incoming file match before inferring downloaded status.
 - Separate catalog candidates from confirmed recordings. Never silently copy a
   candidate's metadata over the user's annotations or mark it owned.
 - Stream authorized previews only after a user gesture, with the provider's

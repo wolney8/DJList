@@ -22,12 +22,57 @@ import xml.etree.ElementTree as ET
 
 from spotify_api import AppError
 from audio_metadata import READER_VERSION, file_fingerprint, read_audio_metadata
+from metadata_review import fields as metadata_fields, suggest_metadata
 
 
 MAX_XML_BYTES = 20 * 1024 * 1024 - 1000
 MAX_ENTRIES = 50000
 AUDIO_EXTENSIONS = {".mp3", ".aiff", ".aif", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".alac"}
 GENERIC_WORDS = {"the", "and", "with", "mix", "remix", "original", "extended", "version", "edit", "radio", "feat", "featuring"}
+MIME_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".aif": "audio/aiff", ".aiff": "audio/aiff",
+              ".flac": "audio/flac", ".m4a": "audio/mp4", ".aac": "audio/aac", ".alac": "audio/mp4", ".ogg": "audio/ogg"}
+MAX_VISIBLE_MARKERS = 256
+
+
+def _time_value(value):
+    try:
+        value = float(value)
+        return value if math.isfinite(value) and 0 <= value <= 36000 else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _xml_cues(item):
+    marks, tempos = item.findall("POSITION_MARK"), item.findall("TEMPO")
+    markers, loops, hot = [], 0, 0
+    for mark in marks:
+        loop = mark.get("Type") == "4"
+        loops += int(loop)
+        number = mark.get("Num", "-1")
+        number = int(number) if re.fullmatch(r"-?[0-9]{1,3}", number) else -1
+        hot += int(0 <= number <= 7)
+        if len(markers) < MAX_VISIBLE_MARKERS:
+            markers.append({"name": _text(mark.get("Name"), 200), "start": _time_value(mark.get("Start")),
+                            "end": _time_value(mark.get("End")) if loop else None,
+                            "type": "loop" if loop else "cue", "num": number})
+    return {"cue_count": len(marks) - loops, "loop_count": loops, "hot_cue_count": hot,
+            "grid_count": len(tempos), "markers": markers, "markers_truncated": len(marks) > MAX_VISIBLE_MARKERS}
+
+
+def cue_evidence(entry, info, snapshot):
+    evidence = entry.get("xml_cue_evidence")
+    if not isinstance(evidence, dict):
+        return {"known": False, "status": "unknown", "stale": True, "cue_count": None,
+                "loop_count": None, "grid_count": None, "hot_cue_count": None, "markers": [],
+                "refreshed_at": None, "source_name": "", "message": "Cue information is unknown. Export and refresh a Rekordbox XML to compare preparation."}
+    fingerprint = entry.get("xml_audio_fingerprint")
+    status = "snapshot" if info["available"] and fingerprint and fingerprint == info["fingerprint"] else "changed" if info["available"] and fingerprint else "unavailable" if not info["available"] else "unknown"
+    message = "From the imported XML snapshot; changes made later in Rekordbox are not visible."
+    if status != "snapshot":
+        message = "The XML cue snapshot cannot be tied to this current file. Refresh XML with the drive connected before deciding which copy to keep."
+    return {**evidence, "known": True, "status": status, "stale": status != "snapshot",
+            "refreshed_at": entry.get("xml_refreshed_at") or snapshot.get("refreshed_at"),
+            "source_name": snapshot.get("source_name", ""), "message": message}
 
 
 def _now():
@@ -106,7 +151,9 @@ def _path_info(value, music_root):
     if raw_root.is_symlink():
         result.update(within_root=False, unavailable_reason="Choose the actual music folder, not a symlink")
         return result
-    if relative is None:
+    if relative is None or ".djlist-removed" in relative.parts:
+        if relative is not None:
+            result.update(within_root=False, unavailable_reason="File is in DJList Removed storage")
         return result  # Do not probe arbitrary locations from an XML file.
     candidate = root / relative
     result["path"] = str(candidate)
@@ -172,6 +219,8 @@ class LibraryInventory:
                     id INTEGER PRIMARY KEY CHECK(id=1), metadata TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS media_metadata (
                     path TEXT PRIMARY KEY, root TEXT NOT NULL, metadata TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS library_metadata_overrides (
+                    path TEXT PRIMARY KEY, metadata TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS files_root_path ON files(root,path);
             """)
             if db.execute("SELECT 1 FROM library_snapshot WHERE id=1").fetchone() is None:
@@ -213,6 +262,8 @@ class LibraryInventory:
                  "duration_ms": None, "cue_count": row.get("cue_count", 0), "source": "scan",
                  "identity_source": "filename", "metadata_source": "", "metadata_status": "not_read",
                  "metadata_message": "Audio tags have not been read yet.", "mime_type": "", "isrc": "", "version_notes": ""}
+        entry["original_metadata"] = {"title": row.get("title", "") or Path(row["path"]).stem,
+                                      "artist": row.get("artist", "") if row_identity else "", "version_notes": "", "featured_artists": ""}
         if metadata:
             entry.update(metadata_status=metadata.get("status", "error"), metadata_message=metadata.get("message", ""))
             if metadata.get("status") in {"read", "offline"}:
@@ -224,6 +275,9 @@ class LibraryInventory:
                              version_notes=metadata.get("version_notes", ""), metadata_source="audio_tags")
                 if metadata.get("title") and metadata.get("artist"):
                     entry["identity_source"] = "audio_tags"
+                entry["original_metadata"] = {"title": metadata.get("title") or Path(row["path"]).stem,
+                                               "artist": metadata.get("artist", ""),
+                                               "version_notes": metadata.get("version_notes", ""), "featured_artists": ""}
         return entry
 
     def cached_audio_metadata(self, path, music_root):
@@ -319,9 +373,9 @@ class LibraryInventory:
                             files.append({name: row[name] for name in file_fields})
                             if row["audio_metadata"] is not None:
                                 metadata_rows[row["selected_path"]] = json.loads(row["audio_metadata"])
-            entries = {row["path"]: row for row in xml_rows}
+            entries = {row["path"]: row for row in xml_rows if ".djlist-removed" not in Path(row["path"]).parts}
             for row in files:
-                if row["path"] in entries:
+                if row["path"] in entries or ".djlist-removed" in Path(row["path"]).parts:
                     continue  # The selected Rekordbox XML remains the stronger source.
                 info = _path_info(row["path"], music_root)
                 metadata = metadata_rows.get(row["path"])
@@ -331,10 +385,34 @@ class LibraryInventory:
                     elif not info["available"]:
                         metadata = {**metadata, "status": "offline", "message": "Previously read audio tags; this file is currently unavailable."}
                 entries[row["path"]] = self._from_file(row, metadata)
+            overrides = {}
+            with self.store.connect() as db:
+                paths = list(entries)
+                for start in range(0, len(paths), 500):
+                    batch = paths[start:start + 500]
+                    overrides.update((row["path"], dict(row)) for row in db.execute(
+                        "SELECT * FROM library_metadata_overrides WHERE path IN (" + ",".join("?" for _ in batch) + ")", batch))
+            snapshot = self._snapshot()
             result = []
             for row in entries.values():
                 info = _path_info(row["path"], music_root)
-                result.append({**row, **{name: info[name] for name in ("available", "within_root", "unavailable_reason")}})
+                value = {**row, **{name: info[name] for name in ("available", "within_root", "unavailable_reason", "size")},
+                         "cue_evidence": cue_evidence(row, info, snapshot), "metadata_override": False, "metadata_override_stale": False}
+                value["original_metadata"] = row.get("original_metadata") or metadata_fields(row)
+                value["mime_type"] = value.get("mime_type") or MIME_TYPES.get(Path(row["path"]).suffix.lower(), "")
+                override = overrides.get(row["path"])
+                if override:
+                    try:
+                        saved, fingerprint = json.loads(override["metadata"]), json.loads(override["fingerprint"])
+                        if info["fingerprint"] and fingerprint == info["fingerprint"]:
+                            value.update(metadata_fields(saved))
+                            value.update(metadata_override=True, identity_source="djlist_reviewed", metadata_override_at=override["created_at"])
+                        else:
+                            value["metadata_override_stale"] = True
+                    except (ValueError, TypeError, AttributeError):
+                        value["metadata_override_stale"] = True
+                value["metadata_review_hint"] = None if value["metadata_override"] else suggest_metadata(value)
+                result.append(value)
             result.sort(key=lambda row: (_normalise(row["artist"]), _normalise(row["title"]), row["path"]))
             self._cache = (cache_key, time.monotonic() + 10, result)
             return [dict(row) for row in result]
@@ -390,9 +468,10 @@ class LibraryInventory:
             raise AppError("The XML collection count does not match its contents. Export it again.")
         raw_root, root = _roots(music_root)
         entries, hydrated, skipped, duplicate_locations = {}, [], 0, 0
+        refreshed_at = _now()
         for item in items:
             path = _location(item.get("Location"))
-            if path is None:
+            if path is None or ".djlist-removed" in Path(path).parts:
                 skipped += 1
                 continue
             info = _path_info(path, str(raw_root))
@@ -406,6 +485,7 @@ class LibraryInventory:
                      "key": _text(item.get("Tonality"), 128), "bpm": _bpm(item.get("AverageBpm")),
                      "genre": _text(item.get("Genre"), 200), "duration_ms": _duration(item.get("TotalTime"), seconds=True),
                      "cue_count": len(item.findall("POSITION_MARK")), "source": "rekordbox_xml",
+                     "xml_cue_evidence": _xml_cues(item), "xml_refreshed_at": refreshed_at,
                      "xml_audio_fingerprint": info["fingerprint"] if info["available"] and info["within_root"] else None,
                      "identity_source": "rekordbox_xml" if _text(item.get("Name")) and _text(item.get("Artist")) else "filename"}
             entries[path] = entry
@@ -413,7 +493,7 @@ class LibraryInventory:
                 hydrated.append((entry, info))
         if items and not entries:
             raise AppError("This XML contains no usable local audio paths. The previous inventory was kept.")
-        snapshot = {"source_name": source_name, "source_path": source_path, "refreshed_at": _now(),
+        snapshot = {"source_name": source_name, "source_path": source_path, "refreshed_at": refreshed_at,
                     "entry_count": len(entries), "skipped": skipped, "duplicate_locations": duplicate_locations,
                     "source_fingerprint": source_fingerprint}
         with self._lock, self.store.connect() as db:
@@ -523,6 +603,7 @@ class LibraryInventory:
                 "scan_count": media_count,
                 "audio_tag_count": sum(row.get("identity_source") == "audio_tags" for row in entries),
                 "metadata_warning_count": sum(row.get("metadata_status") in {"error", "limited", "changed", "stale"} for row in entries),
+                "metadata_review_count": sum(bool(row.get("metadata_review_hint") or row.get("metadata_override_stale")) for row in entries),
                 "duplicate_groups_count": len(self._duplicate_groups(entries))}
 
     @staticmethod
@@ -623,7 +704,7 @@ class LibraryInventory:
             raise AppError("Choose a valid library page.")
         if isinstance(page_size, bool) or not isinstance(page_size, int) or not 1 <= page_size <= 100:
             raise AppError("Choose a library page size from 1 to 100.")
-        if filter_name not in {"all", "missing", "duplicates"}:
+        if filter_name not in {"all", "missing", "duplicates", "metadata"}:
             raise AppError("Choose a valid library filter.")
         entries = self._entries(music_root)
         groups = self._duplicate_groups(entries)
@@ -640,7 +721,9 @@ class LibraryInventory:
                 continue
             if filter_name == "missing" and (row["available"] or not row["within_root"]):
                 continue
-            if query and query not in _normalise(" ".join(str(row[key] or "") for key in ("title", "artist", "album", "genre", "key", "bpm", "path"))):
+            if filter_name == "metadata" and not row.get("metadata_review_hint") and not row.get("metadata_override_stale"):
+                continue
+            if query and query not in _normalise(" ".join(str(row.get(key) or "") for key in ("title", "artist", "album", "genre", "key", "bpm", "path", "version_notes", "featured_artists"))):
                 continue
             filtered.append(row)
         pages = max(1, math.ceil(len(filtered) / page_size))

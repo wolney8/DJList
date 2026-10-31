@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.7.0 — 31 October 2026
+
+- Advance the local interface/API contract to **API 7**.
+- Show background activity, phases, elapsed time, available counts and recent
+  outcomes. Allow Spotify-only connection changes during unrelated disk work;
+  retain serialization for folder changes and name the task causing a wait.
+- Add a wishlist Price column and sorting, with candidate source/check time,
+  recorded price/currency overrides and explicit unknown prices. Add a purchase
+  panel with currency-separated totals, store links, Mark bought and Check
+  Incoming. No automatic payment or full-track download is performed.
+- Replace the main library-review modal with a dedicated workspace for files,
+  duplicate groups, missing/offline issues, metadata review and file history.
+  Show per-copy paths/details and sourced XML cue, loop and grid evidence;
+  distinguish unknown preparation from a snapshot containing zero cues.
+- Add local audio playback, scrubbing, optional browser-decoded waveform and
+  live spectrum. Bound waveform requests to 32 MiB/15 minutes and local streams
+  to 512 MiB; use indexed identifiers and guarded read-only range responses.
+- Add reviewed individual/batch rename and recoverable Move to Removed actions.
+  Keep Removed files on the same drive, retain history and support reviewed
+  undo without overwrite. File changes require closed library-writing tools,
+  fresh file/folder evidence and explicit selections. Live Rekordbox locations
+  remain unchanged and require relocation or record cleanup there.
+- Add text-based artist/title/featuring cleanup with retained mix wording,
+  before/after review and reset. Store corrections only in DJList, tied to the
+  current audio identity; preserve embedded tags, Spotify data and annotations.
+- Add an optional adapter for an external **CueGen 1.0.37** macOS executable.
+  Recheck a database snapshot, prepare an isolated working copy and require the
+  macOS sandbox. Deny network and source writes; validate one-track dry-run
+  output before presenting selectable phrase/Mixed In Key cue suggestions.
+- Expose supported CueGen hot/memory, spacing, timing, colour, name and loop
+  options. Preserve original XML cues, loops, metadata and grid during selected
+  export. Keep MyTag/track-colour writes, cue replacement/removal, automatic
+  import and live database writes unavailable.
+- Attribute the MIT-licensed CueGen colour palette and retain its upstream
+  licence. No CueGen executable or additional analysis engine is bundled.
+- Keep actual Mac/SSD file operations, external CueGen execution, native
+  playback/codec behaviour and Rekordbox import as explicit verification work
+  in [VERIFICATION.md](VERIFICATION.md).
+
 ## 0.6.0 — 31 October 2026
 
 - Advance the local interface/API contract to **API 6** and keep the startup

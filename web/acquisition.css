@@ -1,0 +1,10 @@
+.purchase-dialog{width:min(940px,calc(100vw - 32px));max-width:none}
+.purchase-folder{overflow-wrap:anywhere;font-size:.875rem;color:var(--muted);padding:12px;background:var(--surface-2);border-radius:12px}
+.purchase-totals{font-weight:600;font-size:.875rem}.purchase-entries{display:grid;gap:12px}
+.purchase-entry{display:grid;grid-template-columns:minmax(0,1fr) minmax(160px,240px);gap:20px;padding:18px;border:1px solid var(--line);border-radius:16px;background:var(--surface-2)}
+.purchase-entry h3,.purchase-entry p{margin:0 0 6px}.purchase-entry small{display:block;overflow-wrap:anywhere;color:var(--muted)}
+.purchase-entry-info{min-width:0;overflow-wrap:anywhere}.purchase-entry-actions{display:flex;flex-direction:column;gap:8px}.purchase-entry .button{white-space:normal;text-align:center;min-height:44px}
+.tracks-table .price-col{width:10%}.tracks-table .metadata-col{width:20%}.tracks-table .store-col{width:13%}.tracks-table .file-col{width:14%}
+.row-price{display:block;overflow-wrap:anywhere}.tracks-table td.price-cell{display:table-cell}
+@media(max-width:1100px){.tracks-table td.price-cell{display:block;grid-column:2;min-width:0;width:auto}}
+@media(max-width:600px){.purchase-entry{grid-template-columns:minmax(0,1fr);padding:14px}.purchase-entry-actions{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.purchase-dialog{width:calc(100vw - 16px)}}

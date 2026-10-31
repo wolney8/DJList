@@ -280,7 +280,7 @@ class LibraryAudit:
 
     @staticmethod
     def _public_member(entry):
-        return {key: entry.get(key, "") for key in ("entry_id", "path", "title", "artist", "source", "identity_source", "duration_ms", "version_notes", "available")} | {
+        return {key: entry.get(key, "") for key in ("entry_id", "path", "title", "artist", "album", "genre", "bpm", "key", "source", "identity_source", "duration_ms", "version_notes", "available", "mime_type", "cue_evidence", "metadata_review_hint", "metadata_override", "metadata_override_stale")} | {
             "status": entry["_location"]["status"], "reason": entry["_location"]["reason"],
             "size": (entry["_location"].get("fingerprint") or {}).get("size")}
 
@@ -337,6 +337,8 @@ class LibraryAudit:
                    "outside_root_files": sum(row["kind"] == "outside_root" for row in issues),
                    "unsafe_files": sum(row["kind"] == "unsafe" for row in issues),
                    "duplicate_groups": len(groups),
+                   "duplicate_files": sum(group["count"] for group in groups),
+                   "possible_extra_copies": sum(group["count"] - 1 for group in groups),
                    "byte_identical_groups": sum(len(group["verification"]["groups"]) for group in groups),
                    "linked_missing_tracks": sum(len(row["track_ids"]) for row in issues if row["kind"] == "missing")}
         if not contexts[0]["available"]:

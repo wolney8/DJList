@@ -1,5 +1,29 @@
 # Third-party notices
 
+## CueGen colour palette and optional external adapter
+
+DJList 0.7.0 adapts the hot-cue and memory-cue RGB lookup tables from
+**CueGen**, copyright **(c) 2021 Michael Ganss**, under the **MIT licence**.
+The tuple values in `cuegen_bridge.py` are a Python representation of the
+upstream colour data used to translate returned cue colours into XML.
+
+Pinned source:
+
+- [CueGen/ColorTable.cs at eac34c8c1f007599261f45127095717e0f4abd01](https://github.com/mganss/CueGen/blob/eac34c8c1f007599261f45127095717e0f4abd01/CueGen/ColorTable.cs)
+- [CueGen upstream](https://github.com/mganss/CueGen)
+- [CueGen releases](https://github.com/mganss/CueGen/releases)
+
+Retrieved and checked **31 October 2026**. The complete upstream copyright and
+permission notice is retained in [`vendor/cuegen/LICENSE`](vendor/cuegen/LICENSE).
+Distributions of this palette must retain that notice.
+
+The optional adapter invokes a separately installed **CueGen 1.0.37** executable
+selected by the user. DJList does not redistribute that executable, its runtime,
+dependencies or analysis data. The adapter uses a disposable database copy,
+mandatory macOS sandbox and bounded one-track output; it does not grant rights
+to recordings or analysis from other products. Actual binary/runtime
+compatibility and Rekordbox import are separate verification requirements.
+
 ## TinyTag audio metadata reader
 
 DJList 0.5.0 bundles the unmodified runtime package from **TinyTag 2.3.2**,

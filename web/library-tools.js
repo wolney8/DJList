@@ -1,12 +1,12 @@
-/* Local library maintenance. No action writes audio or the Rekordbox database. */
+/* Reviewed library tools. Backups and cue export do not write the live Rekordbox database. */
 "use strict";
 window.DJLibraryTools = (() => {
-  function init({api, mutation, refresh, openSettings, el, icon, toast, getData, getCsrf, isCompatible}) {
+  function init({api, mutation, refresh, openSettings, el, icon, toast, getData, getCsrf, isCompatible, onLibraryHealth}) {
     const $ = selector => document.querySelector(selector);
     const states = new Map();
     const audit = {request:0,page:1,pages:1,query:"",kind:"all"};
     const repair = {request:0,plan:null,choice:"",expires:null};
-    const cue = {request:0,entry:null,plan:null,selected:new Set(),expires:null,downloadUrl:null};
+    const cue = {request:0,entry:null,plan:null,selected:new Set(),expires:null,downloadUrl:null,player:null,engineRequest:0};
     let backupTimer = null, backupRequest = 0;
     const template = document.createElement("template");
     template.innerHTML = `
@@ -37,11 +37,27 @@ window.DJLibraryTools = (() => {
       </form></dialog>
       <dialog id="cue-plan-dialog" class="tools-dialog" aria-labelledby="cue-plan-title"><form id="cue-plan-form">
         <div class="dialog-heading"><div><p class="eyebrow">REVIEW BEFORE IMPORTING</p><h2 id="cue-plan-title">Plan cue markers</h2><p id="cue-track" class="detail-album"></p></div><button type="button" class="icon-button tools-close" aria-label="Close cue planner"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div>
-        <div class="dialog-content"><p>Calculate cue suggestions from the beatgrid in your saved Rekordbox XML. Check the recording and timing, then export selected markers as a separate XML file.</p>
-          <div class="cue-plan-settings"><div><label class="field-label" for="cue-spacing">Spacing between suggestions</label><select id="cue-spacing"><option value="8">8 bars</option><option value="16">16 bars</option><option value="32" selected>32 bars</option><option value="64">64 bars</option></select></div><div><label class="field-label" for="cue-count">Maximum new hot cues</label><select id="cue-count"><option>1</option><option>2</option><option>4</option><option selected>8</option></select></div></div>
+        <div class="dialog-content"><p>Listen, inspect your existing markers and review suggestions before exporting one track to Rekordbox.</p>
+          <div id="cue-player-mount"></div><button type="button" class="button button-outlined" id="cue-show-preview" hidden>Show audio preview</button>
+          <div class="cue-engine-row"><div><label class="field-label" for="cue-engine">Suggestion engine</label><select id="cue-engine"><option value="grid">XML grid spacing</option><option value="cuegen">CueGen phrases / Mixed In Key</option></select></div><p id="cue-engine-help" class="field-help">Place reviewed cues at regular bar intervals using your XML beatgrid.</p></div>
+          <section id="cue-grid-options"><div class="cue-plan-settings"><div><label class="field-label" for="cue-spacing">Spacing between suggestions</label><select id="cue-spacing"><option value="8">8 bars</option><option value="16">16 bars</option><option value="32" selected>32 bars</option><option value="64">64 bars</option></select></div><div><label class="field-label" for="cue-count">Maximum new hot cues</label><select id="cue-count"><option>1</option><option>2</option><option>4</option><option selected>8</option></select></div></div></section>
+          <section id="cuegen-options" hidden aria-labelledby="cuegen-options-title"><h3 id="cuegen-options-title">CueGen analysis</h3><p id="cuegen-status" class="tools-status" role="status">Checking CueGen…</p>
+            <div class="cue-plan-settings"><div><label class="field-label" for="cuegen-source">Analysis source</label><select id="cuegen-source"><option value="phrases">Rekordbox phrases</option><option value="mixed_in_key">Mixed In Key</option></select></div><div><label class="field-label" for="cuegen-type">Cue type</label><select id="cuegen-type"><option value="hot">Hot cues</option><option value="memory">Memory cues</option></select></div><div><label class="field-label" for="cuegen-count">Maximum suggestions</label><select id="cuegen-count"><option>1</option><option>2</option><option>4</option><option selected>8</option><option value="10" hidden>10</option></select></div><div><label class="field-label" for="cuegen-distance">Minimum spacing, bars</label><input id="cuegen-distance" type="number" min="0" max="128" step="1" value="4"></div></div>
+            <details class="cuegen-advanced"><summary>Phrase, timing, colour and loop options</summary><div class="cue-plan-settings">
+              <div><label class="field-label" for="cuegen-phrase-bars">Minimum phrase length, bars</label><input id="cuegen-phrase-bars" type="number" min="0" max="128" step="1" value="4"></div>
+              <div><label class="field-label" for="cuegen-offset">Cue offset, beats</label><input id="cuegen-offset" type="number" min="-128" max="128" step="1" value="0"></div>
+              <div><label class="field-label" for="cuegen-colour-mode">Cue colours</label><select id="cuegen-colour-mode"><option value="phrase">By phrase</option><option value="energy">By energy</option><option value="sequence">By sequence</option></select></div>
+              <div><label class="field-label" for="cuegen-colours">Colour sequence, optional</label><input id="cuegen-colours" maxlength="120" placeholder="1,4,6,9,12,13,14,15" aria-describedby="cuegen-colours-help"><p id="cuegen-colours-help" class="field-help">CueGen colour numbers separated by commas.</p></div>
+              <div><label class="field-label" for="cuegen-loop-intro">Intro loop, beats</label><input id="cuegen-loop-intro" type="number" min="0" max="512" step="1" value="0"></div><div><label class="field-label" for="cuegen-loop-outro">Outro loop, beats</label><input id="cuegen-loop-outro" type="number" min="0" max="512" step="1" value="0"></div>
+            </div><label class="tools-choice"><input id="cuegen-snap" type="checkbox" checked><span>Snap suggestions to bar starts</span></label>
+            <label class="field-label" for="cuegen-comment">Cue comment</label><input id="cuegen-comment" maxlength="120" value="Energy #">
+            <label class="field-label" for="cuegen-phrase-names">Phrase names</label><input id="cuegen-phrase-names" maxlength="250" value="Intro,Verse,Bridge,Chorus,Outro,Up,Down">
+            <label class="field-label" for="cuegen-phrase-order">Phrase priority</label><input id="cuegen-phrase-order" maxlength="250" value="Intro,Outro,Verse,Chorus,Bridge,Up/Down">
+            </details><p class="field-help">CueGen runs on an isolated database copy. Phrase analysis or Mixed In Key data must already exist. MyTag changes, track colours, cue overwriting and cue removal are unavailable because they require database writes beyond this reviewed export.</p>
+          </section>
           <section id="cue-manual" class="cue-manual" aria-labelledby="cue-manual-title" hidden><h3 id="cue-manual-title">No beatgrid in this XML</h3><p class="field-help">Use values you have checked in Rekordbox. A constant-tempo grid is calculated from these values; DJList does not detect the first beat or tempo from audio.</p><div class="field-grid"><div><label class="field-label" for="cue-bpm">Checked BPM</label><input id="cue-bpm" type="number" min="20" max="400" step="0.01"></div><div><label class="field-label" for="cue-downbeat">First downbeat, seconds</label><input id="cue-downbeat" type="number" min="0" step="0.001"></div></div><label class="tools-choice"><input id="cue-confirm-grid" type="checkbox"><span>I have checked this BPM and first downbeat</span></label></section>
           <button type="submit" class="button button-tonal" id="cue-build">Create suggestions</button><p id="cue-plan-status" class="provider-status" role="status"></p><p id="cue-plan-error" class="form-error" role="alert" hidden></p><div id="cue-plan-warning"></div><div id="cue-existing" class="cue-existing" hidden></div><div id="cue-suggestions"></div>
-          <p class="field-help">These are calculated positions, not detected drops or phrases. Existing XML cues and beatgrid markers are preserved in the export. Back up your Rekordbox library before importing and review one track first. DJList does not apply this XML to your live collection.</p>
+          <p class="field-help" id="cue-method-note">XML spacing calculates positions from your beatgrid. CueGen uses existing phrase or Mixed In Key analysis. Check every selected marker by listening. Existing cues and grid information remain in the XML export; your live database is not edited. Use Rekordbox’s full library backup before importing.</p>
         </div><div class="dialog-footer"><span id="cue-selected-count" role="status">0 suggestions selected</span><button type="button" class="button button-quiet tools-close">Back to library</button><a class="button button-tonal" id="cue-download" hidden download>Save XML file</a><button type="button" class="button button-primary" id="cue-export" disabled>Export selected cues</button></div>
       </form></dialog>`;
     document.body.insertBefore(template.content, $("#toast-region"));
@@ -86,7 +102,7 @@ window.DJLibraryTools = (() => {
         const state = states.get(dialog.id); if (state?.suspended) { state.suspended=false; return; }
         if(dialog.id==="audit-dialog")audit.request++;
         if(dialog.id==="missing-dialog"){repair.request++;repair.plan=null;window.clearTimeout(repair.expires);}
-        if(dialog.id==="cue-plan-dialog"){cue.request++;cue.plan=null;cue.selected.clear();window.clearTimeout(cue.expires);clearCueDownload();}
+        if(dialog.id==="cue-plan-dialog"){cue.request++;cue.engineRequest++;cue.plan=null;cue.selected.clear();window.clearTimeout(cue.expires);clearCueDownload();cue.player?.destroy();cue.player=null;}
         if(state?.parent && !document.querySelector("dialog[open]"))state.parent.showModal();
         if(state?.opener?.isConnected && (!document.querySelector("dialog[open]") || state.opener.closest("dialog")?.open))state.opener.focus({preventScroll:true});
       });
@@ -194,30 +210,58 @@ window.DJLibraryTools = (() => {
       finally{markBusy("#missing-dialog",false);$("#missing-apply").disabled=true;}
     }
     function clearCueDownload(){if(cue.downloadUrl)URL.revokeObjectURL(cue.downloadUrl);cue.downloadUrl=null;$("#cue-download").hidden=true;$("#cue-download").removeAttribute("href");}
+    function entryMarkers(){return cue.entry?.cue_evidence?.markers||cue.entry?.xml_evidence?.markers||cue.entry?.markers||[];}
+    function showCuePlayer(){
+      if(!cue.entry||!window.DJLocalPlayer)return;
+      cue.player?.destroy();
+      try{cue.player=window.DJLocalPlayer.create({mount:$("#cue-player-mount"),entry:cue.entry,markers:entryMarkers(),onClose:()=>{cue.player=null;$("#cue-show-preview").hidden=false;}});$("#cue-show-preview").hidden=true;updateCueMarkers();}
+      catch(e){$("#cue-show-preview").hidden=false;error("#cue-plan-error",e.message);}
+    }
+    function updateCueMarkers(){
+      const existing=cue.plan?.existing_cues||entryMarkers();
+      cue.player?.setMarkers([...existing,...(cue.plan?.suggestions||[]).map(item=>({...item,proposed:true,selected:cue.selected.has(item.id)}))]);
+    }
     function clearCuePlan(){clearCueDownload();cue.request++;cue.plan=null;cue.selected.clear();window.clearTimeout(cue.expires);$("#cue-suggestions").replaceChildren();$("#cue-existing").replaceChildren();$("#cue-existing").hidden=true;$("#cue-plan-warning").replaceChildren();updateCueSelection();}
-    function updateCueSelection(){const n=cue.selected.size;$("#cue-selected-count").textContent=`${n} ${n===1?"suggestion":"suggestions"} selected`;$("#cue-export").disabled=!cue.plan||!n||states.get("cue-plan-dialog")?.busy;}
+    function updateCueSelection(){const n=cue.selected.size;$("#cue-selected-count").textContent=`${n} ${n===1?"suggestion":"suggestions"} selected`;$("#cue-export").disabled=!cue.plan||!n||states.get("cue-plan-dialog")?.busy;updateCueMarkers();}
+    function engineChanged(){
+      const useCueGen=$("#cue-engine").value==="cuegen";
+      $("#cue-grid-options").hidden=useCueGen;$("#cuegen-options").hidden=!useCueGen;$("#cue-manual").hidden=true;$("#cue-confirm-grid").checked=false;
+      $("#cue-engine-help").textContent=useCueGen?"Use phrase boundaries or Mixed In Key analysis to suggest musically meaningful cue points.":"Place reviewed cues at regular bar intervals using your XML beatgrid.";
+      if(useCueGen)loadCueGenStatus();
+    }
+    async function loadCueGenStatus(){const request=++cue.engineRequest;try{const data=await api("/api/cuegen/status");if(request!==cue.engineRequest||!$("#cue-plan-dialog").open)return;$("#cuegen-status").textContent=data.message||(data.configured?"CueGen is configured. Analysis runs on a separate database copy.":"Choose your installed CueGen executable in Settings.");$("#cuegen-status").classList.toggle("is-warning",!data.configured||data.supported===false);}catch(e){if(request===cue.engineRequest)$("#cuegen-status").textContent=e.message;}}
     function openCue(entry,opener){
-      if(!show("#cue-plan-dialog",opener))return;cue.entry=entry;clearCuePlan();$("#cue-track").textContent=`${entry.artist||""} · ${entry.title||entry.name||"Library track"}`;
-      $("#cue-spacing").value="32";$("#cue-count").value="8";$("#cue-bpm").value="";$("#cue-downbeat").value="";$("#cue-confirm-grid").checked=false;$("#cue-manual").hidden=true;
-      error("#cue-plan-error");$("#cue-plan-status").textContent="Choose the spacing, then create suggestions. Your saved XML must be current.";
+      if(!show("#cue-plan-dialog",opener))return;cue.player?.destroy();cue.player=null;cue.entry=entry;clearCuePlan();$("#cue-track").textContent=`${entry.artist||""} · ${entry.title||entry.name||"Library track"}`;
+      $("#cue-engine").value="grid";$("#cue-spacing").value="32";$("#cue-count").value="8";$("#cue-bpm").value="";$("#cue-downbeat").value="";$("#cue-confirm-grid").checked=false;$("#cue-manual").hidden=true;
+      error("#cue-plan-error");$("#cue-plan-status").textContent="Listen to the track, choose an engine and create suggestions. Keep your XML export current.";engineChanged();showCuePlayer();
     }
     async function buildCuePlan(){
-      if(!cue.entry||states.get("cue-plan-dialog")?.busy)return;clearCuePlan();const request=cue.request;
-      const options={interval_bars:Number($("#cue-spacing").value),max_cues:Number($("#cue-count").value)};
-      if(!$("#cue-manual").hidden){
-        if(!$("#cue-confirm-grid").checked||!$("#cue-bpm").value||!$("#cue-downbeat").value){error("#cue-plan-error","Enter the BPM and first downbeat, then confirm that you checked them in Rekordbox.");return;}
-        Object.assign(options,{bpm:Number($("#cue-bpm").value),first_downbeat_seconds:Number($("#cue-downbeat").value),confirm_manual_grid:true});
+      if(!cue.entry||states.get("cue-plan-dialog")?.busy)return;clearCuePlan();const request=cue.request,useCueGen=$("#cue-engine").value==="cuegen";
+      let options;
+      if(useCueGen){options={engine:"cuegen",source:$("#cuegen-source").value,cue_type:$("#cuegen-type").value,max_cues:Number($("#cuegen-count").value),min_distance_bars:Number($("#cuegen-distance").value),min_phrase_bars:Number($("#cuegen-phrase-bars").value),offset_beats:Number($("#cuegen-offset").value),snap:$("#cuegen-snap").checked,color_mode:$("#cuegen-colour-mode").value,colors:$("#cuegen-colours").value.trim(),comment:$("#cuegen-comment").value,phrase_names:$("#cuegen-phrase-names").value,phrase_order:$("#cuegen-phrase-order").value,loop_intro:Number($("#cuegen-loop-intro").value),loop_outro:Number($("#cuegen-loop-outro").value)};}
+      else{
+        options={interval_bars:Number($("#cue-spacing").value),max_cues:Number($("#cue-count").value)};
+        if(!$("#cue-manual").hidden){
+          if(!$("#cue-confirm-grid").checked||!$("#cue-bpm").value||!$("#cue-downbeat").value){error("#cue-plan-error","Enter the BPM and first downbeat, then confirm that you checked them in Rekordbox.");return;}
+          Object.assign(options,{bpm:Number($("#cue-bpm").value),first_downbeat_seconds:Number($("#cue-downbeat").value),confirm_manual_grid:true});
+        }
       }
       let focusManual=false;
-      markBusy("#cue-plan-dialog",true);error("#cue-plan-error");$("#cue-plan-status").textContent="Reading the current XML beatgrid and existing cues…";
+      markBusy("#cue-plan-dialog",true);error("#cue-plan-error");$("#cue-plan-status").textContent=useCueGen?"Checking the database snapshot and running CueGen on an isolated copy…":"Reading the current XML beatgrid and existing cues…";
       try{
         const plan=await mutation("/api/cues/plan",{entry_id:cue.entry.id||cue.entry.entry_id,options});if(request!==cue.request||!$("#cue-plan-dialog").open)return;cue.plan=plan;
-        $("#cue-plan-status").textContent=`${plan.suggestions?.length||0} calculated suggestions · ${plan.grid_source==="manual"?"grid from your checked values":"existing Rekordbox XML beatgrid"}. Select only the markers you have reviewed.`;
+        $("#cue-plan-status").textContent=`${plan.suggestions?.length||0} suggestions · ${useCueGen?"CueGen analysis":plan.grid_source==="manual"?"grid from your checked values":"existing Rekordbox XML beatgrid"}. Listen and select the markers you want to keep.`;
         for(const warning of plan.warnings||[])$("#cue-plan-warning").append(el("p","tools-status",warning));
-        if(plan.existing_cues?.length){const existing=$("#cue-existing");existing.hidden=false;existing.append(el("h3","","Existing cues kept in the export"));const list=el("ul");for(const c of plan.existing_cues)list.append(el("li","",`${c.name||"Existing cue"} · ${time(c.time)}${c.end!=null?`–${time(c.end)}`:""}`));existing.append(list);}
-        for(const suggestion of plan.suggestions||[]){const label=el("label","tools-choice"),input=document.createElement("input");input.type="checkbox";input.value=suggestion.id;const copy=el("span","",`${suggestion.name} · ${time(suggestion.time)}`);copy.append(el("small","",`Hot cue ${String.fromCharCode(65+Number(suggestion.slot))}${suggestion.bar?` · bar ${suggestion.bar}`:""}`));input.addEventListener("change",()=>{if(input.checked)cue.selected.add(input.value);else cue.selected.delete(input.value);updateCueSelection();});label.append(input,copy);$("#cue-suggestions").append(label);}
-        window.clearTimeout(cue.expires);cue.expires=window.setTimeout(()=>{cue.plan=null;updateCueSelection();$("#cue-plan-status").textContent="This plan expired. Create fresh suggestions before exporting.";},Math.max(0,Date.parse(plan.expires_at)-Date.now()));
-      }catch(e){if(request!==cue.request)return;error("#cue-plan-error",e.message);if(e.code==="manual_grid_required"){$("#cue-manual").hidden=false;focusManual=true;}if(e.code==="existing_grid"){$("#cue-manual").hidden=true;$("#cue-confirm-grid").checked=false;}$("#cue-plan-status").textContent="No export has been created.";}
+        if(plan.existing_cues?.length){const existing=$("#cue-existing");existing.hidden=false;existing.append(el("h3","","Existing markers kept"));const list=el("div","cue-marker-buttons");for(const c of plan.existing_cues){const jump=button(`${c.name||"Existing cue"} · ${time(c.time??c.start)}${c.end!=null?`–${time(c.end)}`:""}`,"button button-outlined");jump.addEventListener("click",()=>cue.player?.seek(c.time??c.start));list.append(jump);}existing.append(list);}
+        for(const suggestion of plan.suggestions||[]){
+          const row=el("div","cue-suggestion-row"),label=el("label","tools-choice"),input=document.createElement("input");input.type="checkbox";input.value=suggestion.id;
+          const position=suggestion.time??suggestion.start,copy=el("span","",`${suggestion.name} · ${time(position)}`),memory=suggestion.cue_type==="memory"||Number(suggestion.slot)<0;
+          copy.append(el("small","",`${memory?"Memory cue":`Hot cue ${String.fromCharCode(65+Number(suggestion.slot))}`}${suggestion.bar?` · bar ${suggestion.bar}`:""}${suggestion.end!=null?` · loop ends ${time(suggestion.end)}`:""}`));
+          if(suggestion.reason)copy.append(el("small","",suggestion.reason));input.addEventListener("change",()=>{if(input.checked)cue.selected.add(input.value);else cue.selected.delete(input.value);updateCueSelection();});label.append(input,copy);
+          const jump=button("Listen here","button button-quiet");jump.setAttribute("aria-label",`Listen here — ${suggestion.name} at ${time(position)}`);jump.addEventListener("click",()=>{if(!cue.player)showCuePlayer();cue.player?.seek(Math.max(0,Number(position)-2));cue.player?.play();});row.append(label,jump);$("#cue-suggestions").append(row);
+        }
+        updateCueMarkers();window.clearTimeout(cue.expires);cue.expires=window.setTimeout(()=>{cue.plan=null;updateCueSelection();$("#cue-plan-status").textContent="This plan expired. Create fresh suggestions before exporting.";},Math.max(0,Date.parse(plan.expires_at)-Date.now()));
+      }catch(e){if(request!==cue.request)return;error("#cue-plan-error",e.message);if(e.code==="manual_grid_required"&&!useCueGen){$("#cue-manual").hidden=false;focusManual=true;}if(e.code==="existing_grid"){$("#cue-manual").hidden=true;$("#cue-confirm-grid").checked=false;}$("#cue-plan-status").textContent="No export has been created.";}
       finally{markBusy("#cue-plan-dialog",false);updateCueSelection();if(focusManual&&$("#cue-plan-dialog").open)$("#cue-bpm").focus();}
     }
     async function exportCues(){
@@ -233,7 +277,7 @@ window.DJLibraryTools = (() => {
       }catch(e){error("#cue-plan-error",e.message);$("#cue-plan-status").textContent="Create fresh suggestions before trying another export.";}
       finally{markBusy("#cue-plan-dialog",false);updateCueSelection();if($("#cue-plan-dialog").open)$(cue.downloadUrl?"#cue-download":"#cue-build").focus();}
     }
-    healthButton.addEventListener("click",()=>{if(show("#audit-dialog",healthButton))loadAudit();});
+    healthButton.addEventListener("click",()=>{if(onLibraryHealth){onLibraryHealth();return;}if(show("#audit-dialog",healthButton))loadAudit();});
     backupButton.addEventListener("click",()=>{if(show("#backups-dialog",backupButton))loadBackups(true,true);});
     $("#backups-form").addEventListener("submit",event=>event.preventDefault());$("#backups-refresh").addEventListener("click",()=>loadBackups(true,true));$("#backup-now").addEventListener("click",()=>backupAction("/api/backups/create"));
     $("#backups-settings").addEventListener("click",()=>{$("#backups-dialog").close();openSettings();$("#rekordbox-db").focus();});
@@ -242,11 +286,14 @@ window.DJLibraryTools = (() => {
     $("#audit-prev").addEventListener("click",()=>{audit.page--;loadAudit();});$("#audit-next").addEventListener("click",()=>{audit.page++;loadAudit();});
     $("#missing-form").addEventListener("submit",event=>event.preventDefault());$("#missing-apply").addEventListener("click",applyRepair);
     $("#cue-plan-form").addEventListener("submit",event=>{event.preventDefault();buildCuePlan();});$("#cue-export").addEventListener("click",exportCues);
-    for(const id of ["#cue-spacing","#cue-count","#cue-bpm","#cue-downbeat","#cue-confirm-grid"])$(id).addEventListener("input",()=>{clearCuePlan();$("#cue-plan-status").textContent="Options changed. Create fresh suggestions.";});
+    $("#cue-engine").addEventListener("change",()=>{clearCuePlan();engineChanged();$("#cue-plan-status").textContent="Engine changed. Create fresh suggestions.";});
+    $("#cuegen-type").addEventListener("change",()=>{const memory=$("#cuegen-type").value==="memory";$("#cuegen-count option[value='10']").hidden=!memory;if(!memory&&Number($("#cuegen-count").value)>8)$("#cuegen-count").value="8";});
+    $("#cue-show-preview").addEventListener("click",showCuePlayer);
+    for(const id of ["#cue-spacing","#cue-count","#cue-bpm","#cue-downbeat","#cue-confirm-grid","#cuegen-source","#cuegen-type","#cuegen-count","#cuegen-distance","#cuegen-phrase-bars","#cuegen-offset","#cuegen-colour-mode","#cuegen-colours","#cuegen-loop-intro","#cuegen-loop-outro","#cuegen-snap","#cuegen-comment","#cuegen-phrase-names","#cuegen-phrase-order"])$(id).addEventListener("input",()=>{clearCuePlan();$("#cue-plan-status").textContent="Options changed. Create fresh suggestions.";});
     function scheduleBackupPoll(){window.clearTimeout(backupTimer);if(!real()||document.hidden)return;backupTimer=window.setTimeout(async()=>{if(!states.get("backups-dialog")?.busy)await loadBackups(false);scheduleBackupPoll();},20000);}
-    document.addEventListener("visibilitychange",scheduleBackupPoll);window.addEventListener("pagehide",()=>{window.clearTimeout(backupTimer);window.clearTimeout(cue.expires);window.clearTimeout(repair.expires);});
+    document.addEventListener("visibilitychange",scheduleBackupPoll);window.addEventListener("pagehide",()=>{window.clearTimeout(backupTimer);window.clearTimeout(cue.expires);window.clearTimeout(repair.expires);cue.player?.destroy();cue.player=null;});
     window.addEventListener("pageshow",event=>{if(event.persisted){clearCuePlan();repair.plan=null;$("#missing-apply").disabled=true;$("#missing-status").textContent="Review this missing file again after returning to the page.";$("#cue-plan-status").textContent="Create fresh suggestions after returning to the page.";scheduleBackupPoll();}});
-    return {openCue,stateChanged(data){healthButton.disabled=!real()||!data.capabilities?.library_audit;backupButton.disabled=!real()||!data.capabilities?.rekordbox_backups;summary(data.backups);scheduleBackupPoll();}};
+    return {openCue,openRepair,stateChanged(data){healthButton.disabled=!real()||!data.capabilities?.library_audit;backupButton.disabled=!real()||!data.capabilities?.rekordbox_backups;summary(data.backups);scheduleBackupPoll();}};
   }
   return {init};
 })();

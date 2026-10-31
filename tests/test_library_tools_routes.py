@@ -46,7 +46,8 @@ class LibraryToolRouteTests(unittest.TestCase):
         return int(head.split()[1]), head, body
 
     def test_new_read_routes_keep_host_and_origin_boundaries(self):
-        for route in ("/api/backups", "/api/library-audit", "/api/library-audit.csv"):
+        for route in ("/api/backups", "/api/library-audit", "/api/library-audit.csv", "/api/activity",
+                      "/api/file-operations", "/api/cuegen/status", "/api/library-audio?entry_id=" + "a" * 24):
             for invalid in ({"Host": "outside.example"}, {"Origin": "https://outside.example"}):
                 with self.subTest(route=route, invalid=invalid):
                     self.assertEqual(self.request(route, headers=invalid)[0], 403)
@@ -55,7 +56,14 @@ class LibraryToolRouteTests(unittest.TestCase):
         actions = {"/api/backups/create": {}, "/api/backups/verify": {"backup_id": "x"},
                    "/api/duplicates/verify": {"group_id": "x"}, "/api/missing/preview": {"track_id": 1},
                    "/api/missing/apply": {"token": "x", "entry_id": "x"},
-                   "/api/cues/plan": {"entry_id": "x"}, "/api/cues/export": {"token": "x", "selected_ids": []}}
+                   "/api/cues/plan": {"entry_id": "x"}, "/api/cues/export": {"token": "x", "selected_ids": []},
+                   "/api/file-operations/preview": {"action": "rename", "entry_ids": []},
+                   "/api/file-operations/apply": {"token": "x", "selected_ids": []},
+                   "/api/file-operations/undo-preview": {"operation_id": "x"},
+                   "/api/file-operations/undo": {"token": "x", "selected_ids": []},
+                   "/api/metadata/preview": {"entry_ids": []}, "/api/metadata/reset-preview": {"entry_ids": []},
+                   "/api/metadata/apply": {"token": "x", "selected_ids": []},
+                   "/api/metadata/reset": {"token": "x", "selected_ids": []}}
         with patch.object(self.app, "library_task") as work:
             for route, payload in actions.items():
                 with self.subTest(route=route):

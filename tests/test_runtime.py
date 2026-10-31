@@ -99,6 +99,31 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(fresh.store.settings()["spotify_client_id"], "a" * 32)
         self.assertEqual(fresh.store.settings()["music_root"], str(self.root / "Music"))
         self.assertFalse(fresh.state()["drive"]["rekordbox_db_exists"])
+        fresh.close()
+
+    def test_local_audio_http_ranges_head_and_invalid_range(self):
+        from library_inventory import _identity
+        music = self.root / "Music"
+        music.mkdir()
+        audio = music / "sample.mp3"
+        audio.write_bytes(b"0123456789")
+        self.app.change_settings({"music_root": str(music)})
+        self.app.scan()
+        url = "/api/library-audio?entry_id=" + _identity(str(audio.resolve()))
+        status, headers, body = self.request(url, headers={"Range": "bytes=2-5"})
+        self.assertEqual((status, body), (206, b"2345"))
+        self.assertIn(b"Content-Range: bytes 2-5/10", headers)
+        self.assertIn(b"Cross-Origin-Resource-Policy: same-origin", headers)
+        status, headers, body = self.request(url, method="HEAD")
+        self.assertEqual((status, body), (200, b""))
+        self.assertIn(b"Content-Length: 10", headers)
+        status, headers, _ = self.request(url, headers={"Range": "bytes=10-"})
+        self.assertEqual(status, 416)
+        self.assertIn(b"Content-Range: bytes */10", headers)
+        for suffix in ("&path=/outside", "&entry_id=" + "a" * 24):
+            self.assertEqual(self.request(url + suffix)[0], 400)
+        self.app.store.put_settings({"mode": "demo"})
+        self.assertEqual(self.request(url)[0], 409)
 
     def test_catalogue_route_is_present_and_requires_local_csrf_guard(self):
         self.assertTrue(self.app.state()["capabilities"]["catalog_search"])
@@ -112,7 +137,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body), result)
             search.assert_called_once_with(payload["query"], payload["reference"])
-            self.assertIn(b"media-src https://audio-ssl.itunes.apple.com;", headers)
+            self.assertIn(b"media-src 'self' blob: https://audio-ssl.itunes.apple.com;", headers)
         self.assertEqual(self.request("/api/catalog-search", method="POST", payload={**payload, "url": "https://other.example"},
                                       headers={"X-CSRF-Token": self.app.csrf_token})[0], 400)
 

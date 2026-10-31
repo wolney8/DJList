@@ -1,0 +1,10 @@
+.activity-panel{margin:12px 32px 0;border:1px solid var(--line);border-radius:16px;background:var(--surface-2);font-size:.875rem;min-width:0}
+.activity-panel.is-running{border-color:var(--primary);background:var(--surface-3)}
+.activity-heading{display:flex;align-items:center;gap:12px;justify-content:space-between;padding:8px 16px;min-height:48px}
+.activity-heading strong{overflow-wrap:anywhere}.activity-heading button{flex-shrink:0;min-height:44px}
+.activity-details{padding:0 16px 16px}.activity-item{padding:12px 0;border-top:1px solid var(--line)}
+.activity-item p,.activity-history{margin:4px 0}.activity-item progress{width:min(100%,480px);height:8px;display:block;margin:8px 0;accent-color:var(--primary)}
+.activity-item small{display:block}.activity-error{color:var(--danger);overflow-wrap:anywhere}
+.activity-inline{padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface-3);font-size:.875rem;overflow-wrap:anywhere}
+@media(max-width:600px){.activity-panel{margin:8px 12px 0}.activity-heading{align-items:flex-start;padding:8px 12px}}
+@media(prefers-reduced-motion:reduce){.activity-item progress{animation:none}}

@@ -67,3 +67,17 @@ test("artwork URLs use only the configured HTTPS providers and colour stays stab
   assert.equal(model.tone(track(1)), model.tone(track(1, {artists: "Changed credit"})));
   assert.ok(new Set(Array.from({length: 10}, (_, i) => model.tone(track(i)))).size > 1);
 });
+
+test("recorded prices survive missing offers and take precedence without accepting malformed amounts", () => {
+  const saved=track(1,{purchase_price:"0.00",purchase_currency:"GBP",store_lookup:{status:"matched",offer:{...candidate,price:{amount:1.29,currency:"GBP"}}}});
+  assert.deepEqual(model.price(saved),{amount:0,currency:"GBP",source:"Your recorded price",confirmed:true});
+  for(const amount of ["", "-1", "1.234", "NaN"]){assert.equal(model.price(track(2,{purchase_price:amount})),null);}
+  for(const status of ["review","error","not_found"]){assert.equal(model.price(track(3,{store_lookup:{status,offer:{...candidate,price:{amount:1,currency:"GBP"}}}})),null);}
+});
+
+test("price sorting keeps currencies separate, includes free tracks and puts unknown prices last", () => {
+  const records=[track(1),track(2,{purchase_price:"1.50",purchase_currency:"GBP"}),track(3,{purchase_price:"0",purchase_currency:"GBP"}),track(4,{purchase_price:"0.99",purchase_currency:"USD"})];
+  assert.deepEqual(model.select(records,{sort:"price"}).map(row=>row.id),["3","2","4","1"]);
+  const price=model.price(track(5,{store_lookup:{status:"matched",checked_at:"2026-10-31T12:00:00Z",offer:{...candidate,provider_name:"iTunes",price:{amount:0.99,currency:"GBP"}}}}));
+  assert.equal(price.source,"iTunes candidate");assert.equal(price.checked_at,"2026-10-31T12:00:00Z");assert.equal(price.confirmed,false);
+});

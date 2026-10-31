@@ -14,6 +14,8 @@ SCRIPTS = {
     "xml": 'activate\nreturn POSIX path of (choose file with prompt "Choose your exported Rekordbox XML file" of type {"xml"})',
     "db": 'activate\nreturn POSIX path of (choose file with prompt "Choose the active Rekordbox master.db to back up" of type {"db"})',
     "backups": 'activate\nreturn POSIX path of (choose folder with prompt "Choose where to keep your Rekordbox database backups")',
+    "cuegen": 'activate\nreturn POSIX path of (choose file with prompt "Choose the installed CueGen.Console executable")',
+    "analysis": 'activate\nreturn POSIX path of (choose folder with prompt "Choose Rekordbox’s share folder containing analysis files")',
 }
 
 
