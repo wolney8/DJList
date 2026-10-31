@@ -41,6 +41,15 @@ Rekordbox library, annotations and audio files.
 - Retain imported XML records when their drive is offline. A refresh reads the
   selected export; it must not imply that DJList exported Rekordbox itself.
 - Distinguish XML identity from filename guesses when ranking possible copies.
+- Relinking moved files requires a fresh preview and explicit track selection.
+  Change only those DJList file paths, preserving ownership and every other
+  annotation. Recheck file/root identity and reject stale batches atomically.
+  Never probe arbitrary old folders or imply that relinking updates Rekordbox.
+- Keep MusicBrainz lookup optional and manual. Use the fixed ISRC endpoint,
+  identify the application and respect pacing/cooldowns; do not poll for changes.
+  Treat its Bandcamp/Beatport links as sourced suggestions, with unknown price,
+  BPM and key. Preserve version notes and expose incomplete evidence; never
+  cache an incomplete response as an authoritative no-match result.
 
 ## Interface
 

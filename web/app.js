@@ -2,18 +2,21 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const UI_VERSION = "0.3.0";
-const API_VERSION = 3;
+const UI_VERSION = "0.4.0";
+const API_VERSION = 4;
 const trackModel = window.DJListModel;
 const RESTART_MESSAGE = "Stop DJList in its Terminal window (Control+C), then open the updated launcher and reload this page.";
 const ITUNES_BADGE_PATH = "/assets/download-on-itunes.svg";
 const ui = {data: null, tracks: [], filter: "all", query: "", sort: "newest", page: 1,
-  pageSize: 25, storeFilter: "all", libraryFilter: "all", csrf: "", selected: null, suggestions: new Map(), busy: new Set(), runtimeCompatible: false, actionTrack: null, actionOpener: null, pollTimer: null, pollBusy: false, pendingRefresh: false, jobSignature: "", refreshRequest: 0};
+  pageSize: 25, storeFilter: "all", libraryFilter: "all", csrf: "", selected: null, suggestions: new Map(), busy: new Set(), runtimeCompatible: false, trackOpener: null, pollTimer: null, pollBusy: false, pendingRefresh: false, jobSignature: "", refreshRequest: 0};
+const rowTooltip = {button: null, timer: null, dismissed: null};
 const libraryUI = {page: 1, pageSize: 25, pages: 1, query: "", filter: "all", requestId: 0, opener: null};
+const relocationUI = {token: "", requestId: 0, opener: null, candidates: [], selected: new Set(), page: 1, pageSize: 25, applying: false, previewing: false};
 const providerUI = {requestId: 0, returnToTrack: false, opener: null,
   trackScroll: 0, focusPurchase: false, lastQuery: "", reference: null, audio: null,
   previewButton: null, previewPanel: null, previewId: null, previewRequest: 0,
   previewBadge: null, previewFallback: null};
+const shopLinkUI = {trackId: null, requestId: 0, searched: false, busy: false};
 const viewNames = {all: "All tracks", wanted: "To buy", owned: "Owned", linked: "Files linked"};
 const descriptions = {all: "Keep track of what you want, what you own and where it lives.",
   wanted: "Your shortlist of tracks to find and buy.", owned: "Tracks you have marked as owned.",
@@ -31,6 +34,67 @@ function icon(name, className = "") {
   if (className) svg.setAttribute("class", className);
   const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
   use.setAttribute("href", `#i-${name}`); svg.append(use); return svg;
+}
+function hideRowTooltip(dismiss = false) {
+  window.clearTimeout(rowTooltip.timer);
+  if (dismiss) rowTooltip.dismissed = rowTooltip.button;
+  rowTooltip.button?.removeAttribute("aria-describedby");
+  rowTooltip.button = null;
+  $("#row-action-tooltip").hidden = true;
+}
+function showRowTooltip(button) {
+  window.clearTimeout(rowTooltip.timer);
+  if (rowTooltip.dismissed === button || !button.isConnected || $("dialog[open]")) return;
+  if (rowTooltip.button && rowTooltip.button !== button) rowTooltip.button.removeAttribute("aria-describedby");
+  rowTooltip.button = button;
+  const tooltip = $("#row-action-tooltip");
+  tooltip.textContent = button.dataset.tooltip;
+  tooltip.hidden = false;
+  button.setAttribute("aria-describedby", tooltip.id);
+  positionRowTooltip();
+}
+function positionRowTooltip() {
+  const button = rowTooltip.button, tooltip = $("#row-action-tooltip");
+  if (!button || tooltip.hidden) return;
+  const bounds = button.getBoundingClientRect(), tip = tooltip.getBoundingClientRect();
+  if (bounds.bottom < 0 || bounds.top > window.innerHeight || bounds.right < 0 || bounds.left > window.innerWidth) { hideRowTooltip(true); return; }
+  tooltip.style.left = `${Math.max(8, Math.min(bounds.right - tip.width, document.documentElement.clientWidth - tip.width - 8))}px`;
+  tooltip.style.top = `${bounds.top >= tip.height + 12 ? bounds.top - tip.height - 6 : bounds.bottom + 6}px`;
+}
+function scheduleTooltipHide(button = rowTooltip.button) {
+  window.clearTimeout(rowTooltip.timer);
+  rowTooltip.timer = window.setTimeout(() => {
+    if (button && (button.matches(":hover") || (document.activeElement === button && button.matches(":focus-visible")))) return;
+    if ($("#row-action-tooltip").matches(":hover")) return;
+    if (rowTooltip.dismissed === button) rowTooltip.dismissed = null;
+    hideRowTooltip();
+  }, 100);
+}
+function rowAction(track, kind, symbol, label, tooltip, action, disabledReason = "", dialog = true) {
+  const button = el("button", `row-action row-action-${kind}`);
+  button.type = "button"; button.dataset.trackId = track.id; button.dataset.kind = kind;
+  button.dataset.actionLabel = label;
+  button.dataset.tooltip = disabledReason ? `${label} · ${disabledReason}` : tooltip || label;
+  button.setAttribute("aria-label", `${label} for ${track.title_and_version} by ${track.artists}`);
+  if (dialog) button.setAttribute("aria-haspopup", "dialog");
+  if (disabledReason) button.setAttribute("aria-disabled", "true");
+  button.append(icon(symbol));
+  button.addEventListener("pointerenter", event => { if (event.pointerType !== "touch") showRowTooltip(button); });
+  button.addEventListener("pointerleave", () => { rowTooltip.dismissed = null; scheduleTooltipHide(button); });
+  button.addEventListener("focus", () => showRowTooltip(button));
+  button.addEventListener("blur", () => { rowTooltip.dismissed = null; scheduleTooltipHide(button); });
+  button.addEventListener("click", () => {
+    if (button.getAttribute("aria-disabled") === "true") { showRowTooltip(button); return; }
+    hideRowTooltip(true); action(button);
+  });
+  return button;
+}
+function focusTrackControl(opener, fallbackId = null) {
+  if ($("dialog[open]")) return;
+  const replacement = opener?.id && opener?.kind ? $$("[data-track-id]").find(node => node.dataset.trackId === opener.id && node.dataset.kind === opener.kind) : null;
+  const original = opener?.element?.isConnected ? opener.element : null;
+  const title = fallbackId ? $$("button[data-track-id]").find(node => node.dataset.trackId === String(fallbackId) && node.dataset.kind === "title") : null;
+  (replacement || original || title || $("#track-search")).focus({preventScroll: true});
 }
 function toast(message, error = false) {
   const node = el("div", `toast${error ? " error" : ""}`, message);
@@ -53,6 +117,21 @@ function safePreviewURL(value) {
     const url = new URL(String(value));
     return url.protocol === "https:" && !url.username && !url.password &&
       url.hostname === "audio-ssl.itunes.apple.com" ? url.href : "";
+  } catch { return ""; }
+}
+function safeMoreShopURL(value) {
+  try {
+    const url = new URL(String(value));
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash) return "";
+    const bandcamp = /^[a-z0-9][a-z0-9-]*\.bandcamp\.com$/.test(url.hostname) && /^\/track\/[^/]+\/?$/.test(url.pathname);
+    const beatport = ["www.beatport.com", "beatport.com"].includes(url.hostname) && /^\/track\/[^/]+\/\d+\/?$/.test(url.pathname);
+    return bandcamp || beatport ? url.href : "";
+  } catch { return ""; }
+}
+function safeMusicBrainzURL(value) {
+  try {
+    const url = new URL(String(value));
+    return url.protocol === "https:" && url.hostname === "musicbrainz.org" && !url.username && !url.password && !url.port && /^\/recording\/[0-9a-f-]{36}$/.test(url.pathname) ? url.href : "";
   } catch { return ""; }
 }
 async function api(path, options = {}) {
@@ -139,6 +218,7 @@ function updateControls() {
   setDisabled("#refresh-xml-button", demo || !compatible || !ui.data.settings?.rekordbox_xml);
   $("#refresh-xml-button").title = ui.data.settings?.rekordbox_xml ? "Read the XML file saved in Settings" : "Save your Rekordbox XML file path in Settings first";
   setDisabled("#review-library-button", demo || !compatible);
+  setDisabled("#relocate-button", demo || !compatible || !ui.data.capabilities?.file_relink || relocationUI.applying);
   setDisabled("#import-button", demo || !compatible);
   setDisabled("#refresh-store-button", demo || !compatible || !ui.tracks.length || Boolean(ui.data.store_job?.running));
   setDisabled("#cancel-store-job", !compatible || !ui.data.store_job?.running || Boolean(ui.data.store_job?.cancel_requested));
@@ -153,6 +233,7 @@ function renderTracks() {
   const focused = document.activeElement;
   const focusId = focused?.dataset?.trackId;
   const focusKind = focused?.dataset?.kind;
+  hideRowTooltip();
   const tracks = filteredTracks();
   const page = trackModel.paginate(tracks, ui.page, ui.pageSize);
   ui.page = page.page;
@@ -237,7 +318,7 @@ function trackRow(track) {
   if (savedURL || candidateURL) {
     const link = el("a", "row-store-link", savedURL ? "Open saved link" : displayPrice(offer.price));
     link.href = savedURL || candidateURL; link.target = "_blank"; link.rel = "noopener noreferrer";
-    link.setAttribute("aria-label", `${savedURL ? "Open saved shop link" : "View candidate on iTunes"} for ${track.title_and_version} (new tab)`);
+    link.setAttribute("aria-label", `${savedURL ? "Open saved link" : displayPrice(offer.price)} · ${savedURL ? "saved shop page" : "iTunes candidate"} for ${track.title_and_version} (new tab)`);
     link.append(icon("arrow")); shop.append(link);
     if (!savedURL) shop.append(el("small", "row-note", "iTunes · check the mix"));
   } else if (lookup.message) { const note = el("small", "row-note", lookup.message); shop.append(note); }
@@ -251,9 +332,27 @@ function trackRow(track) {
     review.addEventListener("click", () => { openTrack(track.id); $("#match-list").scrollIntoView({block: "nearest"}); }); file.append(review);
   }
   row.append(file);
-  const actions = labelledCell("actions-cell", "Actions"); const button = el("button", "button button-outlined row-actions", "Actions"); button.type = "button";
-  button.setAttribute("aria-label", `Actions for ${track.title_and_version} by ${track.artists}`); button.setAttribute("aria-haspopup", "dialog");
-  button.dataset.trackId = track.id; button.dataset.kind = "actions"; button.addEventListener("click", () => openActions(track, button)); actions.append(button); row.append(actions);
+  const actions = labelledCell("actions-cell", "Actions"), group = el("div", "row-actions");
+  group.setAttribute("role", "group"); group.setAttribute("aria-label", `Actions for ${track.title_and_version}`);
+  const unavailable = !ui.runtimeCompatible ? "Restart DJList to use this action" : "";
+  group.append(rowAction(track, "edit", "edit", "Edit track details", "Edit your tags, key and notes", button => openTrack(track.id, button)));
+  group.append(rowAction(track, "find", "search", "Find downloads and preview", "Find downloads and preview shop candidates", button => {
+    openTrack(track.id, button); openProviderSearch(ui.selected, $("#detail-find-downloads"));
+  }, unavailable));
+  group.append(rowAction(track, "refresh-store", "refresh", "Refresh shop link and metadata", "Refresh shop link and metadata", button => refreshStoreTracks(button, track.id),
+    unavailable || (ui.data.mode === "demo" ? "Leave the demo to search real shops" : ""), false));
+  const copySummary = track.local_file ? track.file_available ? "Review your linked file" : "Review your unavailable linked file" : candidates.length ? `Review ${candidates.length} possible existing ${candidates.length === 1 ? "copy" : "copies"}` : "Review your library link; no copy suggested yet";
+  const reviewAction = rowAction(track, "library", "drive", "Review existing library copies", copySummary, button => {
+    openTrack(track.id, button);
+    if (!$("#match-list").hidden) { $("#match-list").scrollIntoView({block: "nearest"}); $("#match-list").focus({preventScroll: true}); }
+    else $("#detail-file").focus();
+  });
+  if (candidates.length) {
+    const countLabel = candidates.length > 9 ? "9+" : String(candidates.length);
+    const badge = el("span", "action-count", countLabel); badge.setAttribute("aria-hidden", "true"); reviewAction.append(badge);
+    reviewAction.setAttribute("aria-label", `Review ${countLabel} possible library ${candidates.length === 1 ? "match" : "matches"} for ${track.title_and_version} by ${track.artists}`);
+  }
+  group.append(reviewAction); actions.append(group); row.append(actions);
   return row;
 }
 function checkedTime(value) {
@@ -335,40 +434,131 @@ async function pollStoreJob() {
   } finally { ui.pollBusy = false; scheduleStorePoll(); }
 }
 async function refreshStoreTracks(button, id = null) {
-  await busy(button, async () => {
-    try {
-      await mutation(id ? `/api/tracks/${encodeURIComponent(id)}/refresh-store` : "/api/store-refresh", id ? {} : {force: true});
-      await refresh();
-      if ($("#actions-dialog").open) $("#actions-dialog").close();
-      toast(id ? "Shop lookup queued for this track." : "Shop lookup queued. Progress appears above the table.");
-    } catch (error) {
-      if ($("#actions-dialog").open) showError("#actions-error", error.message); else toast(error.message, true);
-    }
-  });
-}
-function openActions(track, opener) {
-  ui.actionTrack = track.id; ui.actionOpener = opener;
-  $("#actions-track-name").textContent = `${track.artists} · ${track.title_and_version}`;
-  const candidates = ui.suggestions.get(track.id) || [];
-  $("#action-library-summary").textContent = track.local_file ? track.file_available ? "A file is already linked" : "Your linked file is currently unavailable" : candidates.length ? `${candidates.length} possible ${candidates.length === 1 ? "copy" : "copies"} to check` : "No suggested copy yet · refresh your library first";
-  $("#action-refresh-store").disabled = ui.data.mode === "demo" || !ui.runtimeCompatible;
-  $("#action-find").disabled = !ui.runtimeCompatible;
-  showError("#actions-error", ""); $("#actions-dialog").showModal();
-}
-function actionDetails(review = false, find = false) {
-  const id = ui.actionTrack; $("#actions-dialog").close();
-  openTrack(id);
-  if (review) {
-    if (!$("#match-list").hidden) $("#match-list").scrollIntoView({block: "nearest"});
-    else $("#detail-file").focus();
+  const hadFocus = id && document.activeElement === button;
+  let movedAway = false;
+  const rememberMove = event => { if (event.target !== button && event.target !== document.body) movedAway = true; };
+  if (hadFocus) { document.addEventListener("focusin", rememberMove); document.addEventListener("pointerdown", rememberMove); }
+  try {
+    await busy(button, async () => {
+      try {
+        await mutation(id ? `/api/tracks/${encodeURIComponent(id)}/refresh-store` : "/api/store-refresh", id ? {} : {force: true});
+        await refresh();
+        toast(id ? "Shop lookup queued for this track." : "Shop lookup queued. Progress appears above the table.");
+      } catch (error) { toast(error.message, true); }
+    });
+  } finally {
+    document.removeEventListener("focusin", rememberMove); document.removeEventListener("pointerdown", rememberMove);
+    if (hadFocus && !movedAway && [document.body, button].includes(document.activeElement)) focusTrackControl({id: String(id), kind: "refresh-store"});
   }
-  if (find) openProviderSearch(ui.selected, $("#detail-find-downloads"));
 }
 function openLibraryReview(opener = document.activeElement) {
   libraryUI.opener = opener; libraryUI.page = 1; libraryUI.query = ""; libraryUI.filter = "all";
   $("#library-search").value = ""; $("#library-filter").value = "all";
   $("#library-entries").replaceChildren(); $("#library-duplicate-summary").hidden = true;
   showError("#library-review-error", ""); $("#library-review-dialog").showModal(); loadLibraryReview();
+}
+function clearRelocationPreview(message = "Choose the previous folder, then preview possible new locations.") {
+  relocationUI.token = ""; relocationUI.candidates = []; relocationUI.selected.clear(); relocationUI.page = 1;
+  $("#relocation-results").hidden = true; $("#relocation-entries").replaceChildren();
+  $("#relocation-summary").textContent = ""; $("#relocation-status").textContent = message;
+  $("#relocation-warning").hidden = true; updateRelocationSelection();
+}
+function openRelocationReview(opener = document.activeElement) {
+  if (relocationUI.applying) return;
+  relocationUI.requestId++; relocationUI.opener = opener;
+  $("#relocation-old-root").value = ui.data.relocation?.previous_music_root || "";
+  $("#relocation-current-root").textContent = ui.data.settings?.music_root || "No current music folder is saved. Set it in Settings first.";
+  clearRelocationPreview(); showError("#relocation-error", "");
+  $("#relocation-dialog").showModal(); $("#relocation-old-root").focus();
+}
+function updateRelocationSelection() {
+  const count = relocationUI.selected.size, active = relocationUI.applying || relocationUI.previewing;
+  const apply = $("#relocation-apply");
+  apply.textContent = count ? `Update ${count} selected ${count === 1 ? "link" : "links"}` : "Update selected links";
+  apply.disabled = active || !count || !relocationUI.token || !ui.runtimeCompatible;
+  $("#relocation-selection-count").textContent = `${count} ${count === 1 ? "link" : "links"} selected`;
+  $("#relocation-preview").disabled = active || !ui.runtimeCompatible;
+  $("#relocation-old-root").readOnly = active;
+  const page = trackModel.paginate(relocationUI.candidates, relocationUI.page, relocationUI.pageSize);
+  $("#relocation-select-page").disabled = active || !relocationUI.token || !page.items.some(entry => entry.selectable);
+  $("#relocation-clear-selection").disabled = active || !count;
+  for (const input of $$("input[type=checkbox]", $("#relocation-entries"))) {
+    input.checked = relocationUI.selected.has(input.dataset.trackId);
+    input.disabled = active || input.dataset.selectable !== "true" || !relocationUI.token;
+  }
+}
+function renderRelocationEntries() {
+  const page = trackModel.paginate(relocationUI.candidates, relocationUI.page, relocationUI.pageSize);
+  relocationUI.page = page.page;
+  const list = $("#relocation-entries"); list.replaceChildren();
+  for (const entry of page.items) {
+    const card = el("article", "relocation-entry");
+    const label = el("label", "relocation-choice");
+    const checkbox = document.createElement("input"); checkbox.type = "checkbox";
+    checkbox.dataset.trackId = String(entry.track_id); checkbox.dataset.selectable = String(entry.selectable === true);
+    checkbox.checked = relocationUI.selected.has(String(entry.track_id));
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) relocationUI.selected.add(String(entry.track_id)); else relocationUI.selected.delete(String(entry.track_id));
+      updateRelocationSelection();
+    });
+    const name = el("span"); name.append(el("strong", "", entry.title || "Untitled track"), el("small", "", entry.artists || "Unknown artist"));
+    label.append(checkbox, name); card.append(label);
+    card.append(el("p", `relocation-reason${entry.selectable ? " available" : ""}`, entry.reason || (entry.selectable ? "New file location is available for review." : "This location cannot be selected.")));
+    const paths = el("dl", "relocation-paths");
+    paths.append(el("dt", "", "Saved link"), el("dd", "", entry.old_path || ""), el("dt", "", "Proposed link"), el("dd", "", entry.new_path || "No safe location found"));
+    card.append(paths); list.append(card);
+  }
+  $("#relocation-result-count").textContent = page.total ? `${page.start}–${page.end} of ${page.total} candidates` : "No candidates";
+  $("#relocation-page-number").textContent = `Page ${page.page} of ${page.pages}`;
+  $("#relocation-previous-page").disabled = page.page <= 1; $("#relocation-next-page").disabled = page.page >= page.pages;
+  updateRelocationSelection();
+}
+async function previewRelocation() {
+  if (relocationUI.previewing || relocationUI.applying) return;
+  const oldRoot = $("#relocation-old-root").value.trim();
+  if (!oldRoot) { showError("#relocation-error", "Enter the previous music folder path."); $("#relocation-old-root").focus(); return; }
+  const request = ++relocationUI.requestId;
+  clearRelocationPreview("Checking saved links against your current music folder…"); showError("#relocation-error", "");
+  relocationUI.previewing = true; updateRelocationSelection();
+  await busy($("#relocation-preview"), async () => {
+    try {
+      const result = await mutation("/api/relocation-preview", {old_root: oldRoot});
+      if (request !== relocationUI.requestId || !$("#relocation-dialog").open) return;
+      relocationUI.token = typeof result.token === "string" ? result.token : "";
+      relocationUI.candidates = Array.isArray(result.candidates) ? result.candidates : [];
+      const summary = result.summary || {}, eligible = Number(summary.eligible || 0);
+      $("#relocation-current-root").textContent = result.music_root || ui.data.settings?.music_root || "";
+      $("#relocation-summary").textContent = `${eligible} ${eligible === 1 ? "link can" : "links can"} be reviewed for updating · ${Number(summary.already_available || 0)} linked files are already available`;
+      $("#relocation-status").textContent = relocationUI.candidates.length ? "Select only the recordings whose proposed locations you have checked. Nothing is selected automatically." : "No moved-file candidates were found under that previous folder. Existing available links are kept.";
+      $("#relocation-results").hidden = !relocationUI.candidates.length;
+      const limit = Number(result.limit || ui.data.relocation?.limit || 500);
+      $("#relocation-warning").hidden = !result.truncated;
+      $("#relocation-warning").textContent = `This preview is limited to ${limit} candidates. Update a checked batch, then preview again for the remaining links.`;
+      renderRelocationEntries();
+    } catch (error) {
+      if (request !== relocationUI.requestId || !$("#relocation-dialog").open) return;
+      clearRelocationPreview("The preview could not be created. Check the folder paths and try again."); showError("#relocation-error", error.message);
+    } finally { relocationUI.previewing = false; }
+  });
+  updateRelocationSelection();
+}
+async function applyRelocation() {
+  if (relocationUI.applying || !relocationUI.token || !relocationUI.selected.size) return;
+  const token = relocationUI.token, trackIds = [...relocationUI.selected].map(Number);
+  relocationUI.token = ""; relocationUI.applying = true; updateRelocationSelection(); updateControls();
+  showError("#relocation-error", ""); $("#relocation-status").textContent = "Rechecking the selected locations and updating your DJList links…";
+  try {
+    const result = await mutation("/api/relocation-apply", {token, track_ids: trackIds});
+    const count = Number(result.updated || 0);
+    $("#relocation-dialog").close(); clearRelocationPreview();
+    try { await refresh(); toast(`Updated ${count} DJList file ${count === 1 ? "link" : "links"}. Your ownership, tags and notes were kept.`); }
+    catch (error) { toast(`Updated ${count} file links, but the list could not reload: ${error.message}`, true); }
+  } catch (error) {
+    relocationUI.selected.clear();
+    $("#relocation-status").textContent = "The update could not be confirmed. Create a fresh preview before trying again.";
+    showError("#relocation-error", error.message);
+    if (!$("#relocation-dialog").open) toast(error.message, true);
+  } finally { relocationUI.applying = false; updateRelocationSelection(); updateControls(); }
 }
 async function loadLibraryReview() {
   const request = ++libraryUI.requestId;
@@ -440,8 +630,9 @@ async function connectSpotify(button, saveSettings = false) {
     }
   });
 }
-function openTrack(id) {
+function openTrack(id, opener = document.activeElement) {
   const track = ui.tracks.find(item => item.id === String(id)); if (!track) return;
+  ui.trackOpener = {element: opener, id: opener?.dataset?.trackId, kind: opener?.dataset?.kind};
   ui.selected = track;
   $("#detail-title").textContent = track.title_and_version;
   $("#detail-artist").textContent = track.artists;
@@ -492,8 +683,7 @@ function ingestSuggestions(result) {
 }
 function closeTrackAndFocus(id) {
   $("#track-dialog").close();
-  const trigger = $$("button[data-track-id]").find(node => node.dataset.trackId === id && node.dataset.kind === "title");
-  (trigger || $("#track-search")).focus({preventScroll: true});
+  focusTrackControl(ui.trackOpener, id);
 }
 
 function stopPreview() {
@@ -599,7 +789,7 @@ function catalogCard(offer, index) {
   const actions = el("div", "catalog-actions");
   const store = el("a", "itunes-store-link");
   store.href = purchaseURL; store.target = "_blank"; store.rel = "noopener noreferrer";
-  store.setAttribute("aria-label", `View ${offer.title} by ${offer.artist} on iTunes (opens a new tab)`);
+  store.setAttribute("aria-label", `View on iTunes · ${offer.title} by ${offer.artist} (opens a new tab)`);
   const fallback = el("span", "itunes-link-fallback", "View on iTunes"); store.append(fallback);
   const previewURL = safePreviewURL(offer.preview_url);
   const previewEnabled = ui.data?.capabilities?.preview_audio === true;
@@ -702,6 +892,83 @@ function clearProviderResults(message = "Choose Search to update the matches and
   $("#provider-search-button").removeAttribute("aria-busy");
   showError("#provider-error", "");
 }
+function resetMoreShopLinks(track = null) {
+  shopLinkUI.requestId++; shopLinkUI.trackId = track ? String(track.id) : null;
+  shopLinkUI.searched = false; shopLinkUI.busy = false;
+  const section = $("#more-shop-links"), button = $("#more-shop-button");
+  section.hidden = !track;
+  $("#more-shop-cards").replaceChildren(); $("#more-shop-time").textContent = "";
+  showError("#more-shop-error", ""); button.removeAttribute("aria-busy"); button.textContent = "Find more shop links";
+  const unavailable = !ui.data?.capabilities?.shop_links || ui.data.mode === "demo";
+  button.disabled = !track?.isrc || unavailable || !ui.runtimeCompatible;
+  $("#more-shop-status").textContent = !track ? "" : unavailable ? "This lookup is available in your real collection with the current app version." : !track.isrc ? "Spotify did not supply this track’s recording identifier (ISRC), so these additional links cannot be looked up. The shop searches below are still available." : "Optional: look for links attached to this recording in MusicBrainz. Nothing is searched until you choose the button.";
+}
+function moreShopCard(link, index) {
+  if (!link || typeof link !== "object") return null;
+  const purchaseURL = safeMoreShopURL(link.purchase_url), sourceURL = safeMusicBrainzURL(link.source_url);
+  if (!purchaseURL || !sourceURL) return null;
+  const card = el("article", "catalog-card more-shop-card");
+  const title = el("h4", "", link.title || "Untitled recording"); title.id = `more-shop-${shopLinkUI.requestId}-${index}`;
+  card.setAttribute("aria-labelledby", title.id);
+  card.append(el("p", "catalog-source", link.provider_name || "Music shop"), title, el("p", "catalog-artist", link.artist || "Artist not supplied"));
+  if (typeof link.disambiguation === "string" && link.disambiguation.trim()) card.append(el("p", "catalog-version-note", `Recording version note: ${link.disambiguation.trim()}`));
+  card.append(el("p", "catalog-facts", `${displayDuration(link.duration_ms)} · price and availability not checked`));
+  const match = el("div", "catalog-match");
+  match.append(el("strong", "", "Suggested link · check the recording and mix"));
+  const reasons = Array.isArray(link.match?.reasons) ? link.match.reasons.filter(value => typeof value === "string").slice(0, 5) : [];
+  if (reasons.length) { const list = el("ul"); reasons.forEach(reason => list.append(el("li", "", reason))); match.append(list); }
+  card.append(match);
+  const source = el("a", "more-shop-source", "Recording source: MusicBrainz");
+  source.href = sourceURL; source.target = "_blank"; source.rel = "noopener noreferrer";
+  source.setAttribute("aria-label", `Recording source: MusicBrainz for ${link.title || "this recording"} (new tab)`);
+  source.append(icon("arrow")); card.append(source);
+  const actions = el("div", "catalog-actions");
+  const open = el("a", "button button-tonal", `Open ${link.provider_name || "shop"}`);
+  open.href = purchaseURL; open.target = "_blank"; open.rel = "noopener noreferrer";
+  open.setAttribute("aria-label", `Open ${link.provider_name || "shop"} link for ${link.title || "this recording"} (new tab)`);
+  open.append(icon("arrow")); actions.append(open);
+  if (providerUI.returnToTrack) {
+    const use = el("button", "button button-outlined", "Use this shop link"); use.type = "button";
+    use.addEventListener("click", () => {
+      if (!providerUI.returnToTrack) return;
+      $("#detail-purchase").value = purchaseURL; providerUI.focusPurchase = true;
+      $("#provider-dialog").close(); toast("Shop link added to your draft. Choose Save changes to keep it.");
+    });
+    actions.append(use);
+  }
+  card.append(actions); return card;
+}
+async function findMoreShopLinks() {
+  if (!shopLinkUI.trackId || shopLinkUI.busy || !ui.runtimeCompatible) return;
+  const request = ++shopLinkUI.requestId, trackId = shopLinkUI.trackId, force = shopLinkUI.searched;
+  const button = $("#more-shop-button"); shopLinkUI.busy = true;
+  button.disabled = true; button.setAttribute("aria-busy", "true"); showError("#more-shop-error", "");
+  $("#more-shop-status").textContent = "Checking MusicBrainz for additional shop links…";
+  const current = () => request === shopLinkUI.requestId && trackId === shopLinkUI.trackId && $("#provider-dialog").open;
+  try {
+    const result = await mutation(`/api/tracks/${encodeURIComponent(trackId)}/shop-links`, {force});
+    if (!current()) return;
+    shopLinkUI.searched = true;
+    const list = $("#more-shop-cards");
+    if (result.status === "unavailable") {
+      const previous = list.childElementCount ? " Earlier links remain below; their availability has not been checked." : "";
+      $("#more-shop-status").textContent = "The additional-link lookup could not finish.";
+      showError("#more-shop-error", (result.message || "MusicBrainz is unavailable. Try again later.") + previous);
+    } else {
+      const cards = (Array.isArray(result.links) ? result.links : []).slice(0, 40).map(moreShopCard).filter(Boolean);
+      list.replaceChildren(...cards);
+      $("#more-shop-status").textContent = result.message || (cards.length ? `${cards.length} suggested shop links found. Check the exact recording on the shop page.` : "No additional links were found. MusicBrainz coverage is partial; you can still search the shops below.");
+      const time = checkedTime(result.checked_at);
+      $("#more-shop-time").textContent = time ? `${result.cached ? "Saved lookup" : "Checked"} ${time} · MusicBrainz` : "";
+    }
+  } catch (error) {
+    if (!current()) return;
+    showError("#more-shop-error", error.message);
+    $("#more-shop-status").textContent = "The additional-link lookup could not finish. The iTunes results and other shop searches are still available.";
+  } finally {
+    if (current()) { shopLinkUI.busy = false; button.disabled = false; button.removeAttribute("aria-busy"); button.textContent = shopLinkUI.searched ? "Check again" : "Find more shop links"; }
+  }
+}
 function openProviderSearch(track = null, opener = null) {
   if (!ui.runtimeCompatible) { toast(RESTART_MESSAGE, true); return; }
   const dialog = $("#provider-dialog");
@@ -724,6 +991,7 @@ function openProviderSearch(track = null, opener = null) {
   $("#provider-purchase-help").hidden = !providerUI.returnToTrack;
   $("#provider-done").textContent = providerUI.returnToTrack ? "Back to track details" : "Done";
   clearProviderResults("Enter a song or artist, then choose Search.");
+  resetMoreShopLinks(track);
   dialog.showModal();
   $("#provider-query").focus();
   const saved = track?.store_lookup;
@@ -775,7 +1043,8 @@ async function runProviderSearch() {
 $("#find-downloads-button").addEventListener("click", event => openProviderSearch(null, event.currentTarget));
 $("#detail-find-downloads").addEventListener("click", event => openProviderSearch(ui.selected, event.currentTarget));
 $("#provider-form").addEventListener("submit", event => { event.preventDefault(); runProviderSearch(); });
-$("#provider-query").addEventListener("input", () => clearProviderResults());
+$("#provider-query").addEventListener("input", () => { clearProviderResults(); resetMoreShopLinks(); });
+$("#more-shop-button").addEventListener("click", findMoreShopLinks);
 $("#provider-done").addEventListener("click", () => {
   providerUI.focusPurchase = providerUI.returnToTrack;
   $("#provider-dialog").close();
@@ -783,6 +1052,7 @@ $("#provider-done").addEventListener("click", () => {
 $("#provider-dialog").addEventListener("close", () => {
   providerUI.lastQuery = $("#provider-query").value.trim();
   clearProviderResults();
+  resetMoreShopLinks();
   if (providerUI.returnToTrack) {
     $("#track-dialog").showModal();
     $(".dialog-content", $("#track-dialog")).scrollTop = providerUI.trackScroll;
@@ -876,20 +1146,30 @@ $("#refresh-xml-button").addEventListener("click", async event => {
   });
 });
 $("#review-library-button").addEventListener("click", event => openLibraryReview(event.currentTarget));
+$("#relocate-button").addEventListener("click", event => openRelocationReview(event.currentTarget));
+$("#relocation-form").addEventListener("submit", event => { event.preventDefault(); previewRelocation(); });
+$("#relocation-old-root").addEventListener("input", () => { relocationUI.requestId++; clearRelocationPreview("Folder changed. Preview the new locations again."); showError("#relocation-error", ""); });
+$("#relocation-apply").addEventListener("click", applyRelocation);
+$("#relocation-select-page").addEventListener("click", () => {
+  for (const entry of trackModel.paginate(relocationUI.candidates, relocationUI.page, relocationUI.pageSize).items) if (entry.selectable) relocationUI.selected.add(String(entry.track_id));
+  updateRelocationSelection();
+});
+$("#relocation-clear-selection").addEventListener("click", () => { relocationUI.selected.clear(); updateRelocationSelection(); });
+$("#relocation-previous-page").addEventListener("click", () => { relocationUI.page--; renderRelocationEntries(); });
+$("#relocation-next-page").addEventListener("click", () => { relocationUI.page++; renderRelocationEntries(); });
+$("#relocation-dialog").addEventListener("close", () => {
+  relocationUI.requestId++; relocationUI.token = ""; relocationUI.selected.clear();
+  if (relocationUI.opener?.isConnected) relocationUI.opener.focus({preventScroll: true});
+});
 $("#refresh-store-button").addEventListener("click", event => refreshStoreTracks(event.currentTarget));
 $("#cancel-store-job").addEventListener("click", async event => {
   await busy(event.currentTarget, async () => { try { await mutation("/api/store-cancel"); await refresh(); toast("Stopping the lookup. A request already in progress may finish first."); } catch (error) { toast(error.message, true); } });
 });
-$("#action-edit").addEventListener("click", () => actionDetails());
-$("#action-find").addEventListener("click", () => actionDetails(false, true));
-$("#action-review-match").addEventListener("click", () => actionDetails(true));
-$("#action-refresh-store").addEventListener("click", event => refreshStoreTracks(event.currentTarget, ui.actionTrack));
-$("#actions-dialog").addEventListener("close", () => {
-  if (!$("dialog[open]")) {
-    const replacement = $$("[data-track-id]").find(node => node.dataset.trackId === ui.actionTrack && node.dataset.kind === "actions");
-    (replacement || (ui.actionOpener?.isConnected ? ui.actionOpener : $("#track-search"))).focus({preventScroll: true});
-  }
-});
+$("#track-dialog").addEventListener("close", () => { if (!providerUI.returnToTrack) focusTrackControl(ui.trackOpener, ui.selected?.id); });
+$("#row-action-tooltip").addEventListener("pointerenter", () => window.clearTimeout(rowTooltip.timer));
+$("#row-action-tooltip").addEventListener("pointerleave", () => scheduleTooltipHide());
+document.addEventListener("scroll", positionRowTooltip, {capture: true, passive: true});
+window.addEventListener("resize", positionRowTooltip);
 $("#library-review-form").addEventListener("submit", event => { event.preventDefault(); libraryUI.query = $("#library-search").value.trim(); libraryUI.filter = $("#library-filter").value; libraryUI.page = 1; loadLibraryReview(); });
 $("#library-filter").addEventListener("change", () => { libraryUI.query = $("#library-search").value.trim(); libraryUI.filter = $("#library-filter").value; libraryUI.page = 1; loadLibraryReview(); });
 $("#library-previous-page").addEventListener("click", () => { libraryUI.page = Math.max(1, libraryUI.page - 1); loadLibraryReview(); });
@@ -900,6 +1180,7 @@ document.addEventListener("focusin", () => { if (ui.pendingRefresh) window.setTi
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { flushPendingRefresh(); scheduleStorePoll(); } else window.clearTimeout(ui.pollTimer); });
 window.addEventListener("pagehide", () => window.clearTimeout(ui.pollTimer));
 document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !$("#row-action-tooltip").hidden) { hideRowTooltip(true); event.preventDefault(); return; }
   if (event.key === "/" && !event.ctrlKey && !event.metaKey && !$("dialog[open]") && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) { event.preventDefault(); $("#track-search").focus(); }
 });
 function setTheme(theme) {

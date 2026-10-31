@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0 — 31 October 2026
+
+- Replace the row Actions chooser with four direct icon buttons, labelled on
+  hover and keyboard focus. Keep editing, downloads, refresh and library review
+  accessible within responsive rows.
+- Add **Find moved files**: preview exact relative-path matches from an old music
+  folder to the current one, select checked candidates and update saved links.
+  Preserve ownership, preparation state and all other annotations. Never move
+  audio files or change Rekordbox.
+- Recheck file identity, availability and saved links before applying an entire
+  selected batch. Reject stale previews, changed files, size mismatches and
+  symlinks; previews expire after ten minutes.
+- Add manual MusicBrainz ISRC lookup for community-listed direct Bandcamp and
+  Beatport purchase links. These links carry no verified shop prices, previews,
+  BPM or key; automatic iTunes catalogue lookup remains available.
+- Surface recording disambiguation and partial evidence for review. Keep
+  malformed or limited provider responses distinct from a complete negative
+  lookup, and preserve the existing draft when a shop link is selected.
+- Add a roadmap separating implemented work, Mac verification, provider-access
+  requirements and deferred development. Live MusicBrainz API access remains
+  unverified from the development environment.
+
 ## 0.3.0 — 30 October 2026
 
 - Queue iTunes Store lookups after Spotify refresh for new or changed tracks,

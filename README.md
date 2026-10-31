@@ -3,8 +3,9 @@
 **A local Spotify wishlist and DJ music tracker.** Find purchase candidates,
 listen to permitted store previews, record ownership and link your audio files.
 
-Version **0.3.0**. Development build; see [VERIFICATION.md](VERIFICATION.md) for
-the checks performed and the remaining limits.
+Version **0.4.0**. Development build; see [VERIFICATION.md](VERIFICATION.md) for
+the checks performed and [ROADMAP.md](ROADMAP.md) for outstanding work and access
+requirements.
 
 ## Open it on a Mac
 
@@ -74,8 +75,8 @@ These suggestions stay separate from your ownership ticks, confirmed purchase
 links, tags, key, BPM and notes. They do not overwrite your saved details.
 
 Use **Refresh shop links** to recheck the current Spotify list, or a track's
-**Actions** menu to refresh just that song. The UK iTunes Store is the only
-catalogue returning results inside DJList in this version.
+refresh icon to recheck just that song. The UK iTunes Store is the only live
+catalogue returning prices and previews inside DJList in this version.
 
 ## Work with your track list
 
@@ -84,9 +85,12 @@ filter by shop status and possible existing copies, linked files or unavailable
 linked files. Sort by artist, title, BPM, key or shop status. The existing
 **To buy**, **Owned** and **Files linked** views remain available.
 
-Each track's **Actions** menu opens its details, download candidates, shop
-refresh or existing-file suggestions. Spotify album artwork appears when
-available; a consistent coloured tile is used when artwork is unavailable.
+Each row has four direct **Actions** icons: **edit**, **find downloads and
+preview**, **refresh shop link and metadata**, and **review existing library
+copies**. Hover or keyboard-focus an icon to see its label. There is no separate
+action-selection dialog; the editor and download panels still open when needed.
+Spotify album artwork appears when available; a consistent coloured music-note
+icon is used when artwork is unavailable.
 
 ## Find and preview a purchase candidate
 
@@ -114,11 +118,36 @@ changes** is still required. No search result marks a track owned or buys it.
 These are store offers, not guaranteed checkout quotes or a cross-store price
 comparison. Verify the exact mix, region and download format before buying.
 
-### Other shop searches
+### More shop links: MusicBrainz
+
+For a selected track, choose **Find more shop links** in the download panel.
+DJList uses its ISRC recording code to ask MusicBrainz for community-listed
+direct **Bandcamp** and **Beatport** purchase links. No extra account or API key
+is needed for this lookup. A missing ISRC or absent community link can leave
+the result empty even when a shop sells the track.
+
+Results show their MusicBrainz source, title, artist, duration where known and
+recording/version notes. Conflicting versions, additional recording notes and
+incomplete evidence require review. Malformed or unavailable metadata is not
+reported as a successful search with no matches. Choose a link only after
+checking the recording, then **Save changes** to keep it in track details.
+
+This is a manual metadata lookup, separate from automatic iTunes searches.
+It does not fetch the shop page, verify current availability, or supply shop
+prices, previews, BPM or key. Successful complete responses are cached in memory
+for this run, for up to seven days; explicit refresh respects provider pacing
+and cooldowns. See the [MusicBrainz API](https://musicbrainz.org/doc/MusicBrainz_API).
+
+**Verification limit:** the live MusicBrainz API was unavailable from the
+development environment during this update. Automated response-handling tests
+are separate from live provider verification; see [VERIFICATION.md](VERIFICATION.md).
+
+### External shop searches
 
 Bandcamp and Beatport open their own search pages. Traxsource uses a labelled
 Google site search. An all-three Google link is also available. These links
-do not supply live inventory, prices or embedded previews in this version.
+remain useful when MusicBrainz has no direct link. They do not supply live
+inventory, prices or embedded previews inside DJList.
 
 ## Tags, BPM and key
 
@@ -160,6 +189,28 @@ deleted or marked owned by a scan or XML refresh. Choose **Select this file**
 and **Save changes** to confirm a link; this records ownership and can fill
 empty key/BPM fields from the XML. You can also tick ownership manually.
 
+## Find files after moving a folder or renaming an SSD
+
+Save the **current music folder** in Settings, then choose **Find moved files**.
+Check the **Previous music folder** path and choose **Preview locations**.
+Select the proposed links you have checked, then choose **Update selected links**.
+Nothing is selected by default.
+
+This works when the folder layout and filenames beneath the old and current
+folders are unchanged. DJList maps those relative paths and compares previously
+indexed file sizes when available. It does not compare audio content. Missing
+files, size mismatches and symlinks cannot be selected; renamed files or a
+different folder layout need manual linking.
+
+The preview expires after **10 minutes**. If files, folders or saved links change,
+make a fresh preview. Each preview holds up to 500 proposed links; after updating
+a batch, preview again for any remaining links. Already usable links are skipped.
+
+Only the selected file addresses in DJList change. Ownership, preparation state,
+tags, BPM/key and notes are preserved. Audio files are not moved and Rekordbox is
+not edited. Update Rekordbox separately and export fresh XML when its file
+locations change, then use **Refresh media** and **Refresh XML** in DJList.
+
 ## Music and local records
 
 Set your actual music folder in Settings; external SSDs are supported. New
@@ -172,8 +223,9 @@ It never moves, renames, deletes or edits audio. Ownership is separate from
 file availability, so a disconnected drive does not clear ticks or saved paths.
 
 If you move folders or rename the SSD, update the music folder in Settings and
-export a fresh Rekordbox XML. Saved track links are not relocated automatically;
-review and confirm the correct files.
+use **Find moved files** to review compatible saved links. Export a fresh
+Rekordbox XML after updating its locations. Folder changes alone do not silently
+rewrite saved links.
 
 On macOS, the SQLite database lives in:
 
@@ -191,8 +243,9 @@ The server listens only on `127.0.0.1:8888`. Vercel is not used. Spotify request
 go to Spotify. Live catalogue searches send artist/title terms to Apple's
 public API. Authorized previews stream directly from Apple's audio host after
 a click. Spotify artwork loads from Spotify's image service. External shop/Google
-links send the query when opened. The app does not upload your music library or
-audio files.
+links send the query when opened. **Find more shop links** sends the selected
+track's ISRC to MusicBrainz; title, artist and duration comparisons happen locally.
+The app does not upload your music library or audio files.
 
 The public repository contains source, tests and documentation. Keep personal
 Client IDs, settings, playlists, databases, tokens, logs and music outside Git.
@@ -217,14 +270,10 @@ Apple badge assets retain Apple's rights; see their adjacent attribution file.
 
 ## Further work
 
-- Supported catalogue access for more shops and comparable prices.
-- Spotify artist-genre suggestions with clear provenance.
-- Multiple playlists, persistent sign-in and a simpler installer/updater.
-- Audio analysis, controlled Rekordbox import/export and CueGen integration.
-- Browser, keyboard, screen-reader and responsive checks toward WCAG 2.2 AA.
-
-Automatic purchasing, full-track downloading, audio moves and Rekordbox/cue
-writes are not implemented. Preparation statuses record your own progress.
+[ROADMAP.md](ROADMAP.md) separates implemented features, checks requiring the
+user's Mac, provider-access requirements and deferred development. Automatic
+purchasing, full-track downloading, audio moves and Rekordbox/cue writes are
+not implemented. Preparation statuses record your own progress.
 
 ## References
 
@@ -234,4 +283,7 @@ writes are not implemented. Preparation statuses record your own progress.
 - [Apple Search API and promotional-content terms](https://performance-partners.apple.com/search-api)
 - [Apple iTunes identity guidelines](https://marketing.services.apple/itunes-identity-guidelines)
 - [Bandcamp API documentation](https://bandcamp.com/developer)
+- [MusicBrainz API](https://musicbrainz.org/doc/MusicBrainz_API)
+- [MusicBrainz request limits](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting)
+- [MusicBrainz recording/version conventions](https://musicbrainz.org/doc/Style/Recording)
 - [Rekordbox XML format](https://cdn.rekordbox.com/files/20200410160904/xml_format_list.pdf)

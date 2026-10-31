@@ -33,9 +33,11 @@ from spotify_api import AppError, SpotifyClient, begin_authorization, callback_c
 from catalog import CatalogClient
 from enrichment import StoreLookupQueue
 from library_inventory import LibraryInventory
+from relocation import BATCH_LIMIT as RELOCATION_LIMIT, RelocationPlanner
+from musicbrainz import MusicBrainzClient
 
-VERSION = "0.3.0"
-API_VERSION = 3
+VERSION = "0.4.0"
+API_VERSION = 4
 DEFAULTS = {
     "spotify_client_id": "",
     "playlist_url": "", "music_root": "~/Music/DJ Music",
@@ -190,7 +192,7 @@ class Store:
                     cue_count INTEGER NOT NULL DEFAULT 0, origin TEXT NOT NULL DEFAULT 'scan');
             """)
             for key, value in {**DEFAULTS, "mode": "real", "source_id": "", "last_media_refresh": None,
-                               "last_media_skipped": 0}.items():
+                               "last_media_skipped": 0, "previous_music_root": ""}.items():
                 db.execute("INSERT OR IGNORE INTO settings VALUES (?,?)", (key, json.dumps(value)))
         try:
             self.path.chmod(0o600)
@@ -298,15 +300,18 @@ class Application:
         self.auth_lock = threading.RLock()
         self.work_lock = threading.RLock()
         self.catalog = CatalogClient()
+        self.musicbrainz = MusicBrainzClient()
         self.app_dir = Path(__file__).resolve().parent
         self.web = Path(web_dir) if web_dir is not None else self.app_dir / "web"
         self.assets, self.build_id = snapshot_web_assets(self.web)
         self.started_at = now()
         self.library = LibraryInventory(self.store)
+        self.relocation = RelocationPlanner(self.store)
         self.lookup = StoreLookupQueue(self.store, lambda query, reference, force=False: self.catalog.search(query, reference, force=force))
 
     def close(self):
         self.lookup.close()
+        self.relocation.clear()
 
     def runtime(self):
         return {"version": VERSION, "api_version": API_VERSION, "build_id": self.build_id,
@@ -348,13 +353,17 @@ class Application:
                 "drive": {"available": root.is_dir(), "music_root": str(root),
                           "rekordbox_db_exists": bool(settings["rekordbox_db"] and Path(settings["rekordbox_db"]).expanduser().is_file())},
                 "library": library, "suggestions": suggestions,
+                "relocation": {"previous_music_root": settings.get("previous_music_root", "") if namespace == "real" else "",
+                               "limit": RELOCATION_LIMIT},
                 "store_job": self.lookup.status() if namespace == "real" else StoreLookupQueue._idle(),
                 "mode": namespace, "csrf_token": self.csrf_token, "version": VERSION,
                 "api_version": API_VERSION, "runtime": self.runtime(),
                 "capabilities": {"spotify_sync": True, "file_scan": True, "rekordbox_xml_import": True,
                                  "provider_search": True,
                                  "catalog_search": True,
+                                 "shop_links": True,
                                  "automatic_store_lookup": True, "library_review": True, "library_refresh": True,
+                                 "file_relink": True,
                                  "preview_audio": "assets/download-on-itunes.svg" in self.assets,
                                  "cue_generation": False, "rekordbox_xml_export": False, "file_moves": False}}
 
@@ -396,9 +405,19 @@ class Application:
                 clean[key] = str(Path(clean[key]).expanduser())
                 if key == "rekordbox_xml" and Path(clean[key]).suffix.lower() != ".xml":
                     raise AppError("Choose the path to a Rekordbox .xml export.")
+        root_changed = clean.get("music_root", old["music_root"]) != old["music_root"]
+        if root_changed:
+            # The previous configured root is still authorized here. Resolve its
+            # platform alias before remembering it; relocation previews never
+            # resolve or probe the user-supplied old folder.
+            try:
+                clean["previous_music_root"] = str(Path(old["music_root"]).expanduser().resolve(strict=False))
+            except (OSError, RuntimeError):
+                clean["previous_music_root"] = old["music_root"]
         self.store.put_settings(clean)
-        if clean.get("music_root", old["music_root"]) != old["music_root"]:
+        if root_changed:
             self.library.invalidate()
+            self.relocation.clear()
         if clean.get("auto_store_lookup") is False:
             self.lookup.cancel()
         if clean.get("spotify_client_id", old["spotify_client_id"]) != old["spotify_client_id"]:
@@ -471,6 +490,7 @@ class Application:
             raise AppError("Choose whether to enter or leave the demo.")
         if enabled:
             self.lookup.cancel()
+            self.relocation.clear()
         if enabled and not self.store.rows("demo"):
             examples = [
                 ("Night Window", "Example Artist", "Original Mix"),
@@ -664,6 +684,42 @@ class Application:
     def refresh_stores(self, force=False, identity=None):
         return self.lookup.enqueue([identity] if identity is not None else None, force=force)
 
+    def shop_links(self, identity, force=False):
+        """Look up community purchase-link evidence only on an explicit request."""
+        if self.namespace() != "real":
+            raise AppError("Leave the demo before finding more shop links for a real track.", 409)
+        if not isinstance(force, bool):
+            raise AppError("Choose a valid shop-link refresh option.")
+
+        def reference(row):
+            metadata = json.loads(row["metadata"])
+            return {"isrc": metadata.get("isrc", ""), "artists": metadata.get("artists", ""),
+                    "title": metadata.get("title_and_version", ""), "duration_ms": metadata.get("duration_ms")}
+
+        original = reference(self.store.get(identity, "real"))
+        result = self.musicbrainz.lookup(original, force=force)
+        if self.namespace() != "real" or reference(self.store.get(identity, "real")) != original:
+            raise AppError("The collection or track changed during lookup. Open its finder again for current shop links.", 409)
+        return result
+
+    def relocation_preview(self, old_root):
+        if not self.work_lock.acquire(blocking=False):
+            raise AppError("Another refresh or scan is running. Wait before reviewing moved files.", 409)
+        try:
+            return self.relocation.preview(old_root)
+        finally:
+            self.work_lock.release()
+
+    def relocation_apply(self, token, track_ids):
+        if not self.work_lock.acquire(blocking=False):
+            raise AppError("Another refresh or scan is running. Wait before relinking files.", 409)
+        try:
+            result = self.relocation.apply(token, track_ids)
+            self.library.invalidate()
+            return result
+        finally:
+            self.work_lock.release()
+
     def export_csv(self):
         fields = ["artists", "title_and_version", *MANUAL.keys(), "spotify_id", "spotify_url", "in_source", "first_seen", "last_seen"]
         stream = io.StringIO(newline="")
@@ -826,10 +882,22 @@ class Handler(BaseHTTPRequestHandler):
                 if set(data) - {"xml", "filename"}:
                     raise AppError("Choose one XML file to import.")
                 result = self.app.import_xml(data.get("xml"), source_name=data.get("filename", "Uploaded XML"))
+            elif self.command == "POST" and path == "/api/relocation-preview":
+                if set(data) != {"old_root"}:
+                    raise AppError("Choose only the old music folder for this preview.")
+                result = self.app.relocation_preview(data.get("old_root"))
+            elif self.command == "POST" and path == "/api/relocation-apply":
+                if set(data) != {"token", "track_ids"}:
+                    raise AppError("Select tracks from a fresh moved-file preview.")
+                result = self.app.relocation_apply(data.get("token"), data.get("track_ids"))
             elif re.fullmatch(r"/api/tracks/\d+/refresh-store", path) and self.command == "POST":
                 if data:
                     raise AppError("This action refreshes the selected track's store result.")
                 result = self.app.refresh_stores(force=True, identity=int(path.split("/")[3]))
+            elif re.fullmatch(r"/api/tracks/\d+/shop-links", path) and self.command == "POST":
+                if set(data) - {"force"}:
+                    raise AppError("Only the shop-link refresh option is accepted.")
+                result = self.app.shop_links(int(path.split("/")[3]), force=data.get("force", False))
             elif re.fullmatch(r"/api/tracks/\d+/link", path) and self.command == "POST":
                 result = self.app.link(int(path.split("/")[3]), data.get("path"))
             elif re.fullmatch(r"/api/tracks/\d+", path) and self.command == "PATCH":

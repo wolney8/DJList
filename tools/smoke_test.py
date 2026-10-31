@@ -29,12 +29,12 @@ def main():
         store = Store(root / "data")
         store.put_settings({"music_root": str(music), "rekordbox_xml": str(xml_path), "auto_store_lookup": False})
         store.upsert([{"spotify_id": "fixture-track", "artists": "Example Artist", "title_and_version": "Night Window (Original Mix)",
-                       "duration_ms": 193000, "album": "Fictional test release", "spotify_url": "", "isrc": ""}], "fixture-source")
+                       "duration_ms": 193000, "album": "Fictional test release", "spotify_url": "", "isrc": "GBABC2600001"}], "fixture-source")
         real_id = store.rows("real")[0]["id"]
         store.patch(real_id, "real", {"notes": "Keep my notes", "tags": "my tag", "purchase_url": "https://example.test/manual-choice"})
         app = root / "app"
         app.mkdir()
-        for name in ("app.py", "spotify_api.py", "catalog.py", "library_inventory.py", "enrichment.py"):
+        for name in ("app.py", "spotify_api.py", "catalog.py", "library_inventory.py", "enrichment.py", "relocation.py", "musicbrainz.py"):
             shutil.copy2(source / name, app / name)
         shutil.copytree(source / "web", app / "web")
         # Keep stalled startup diagnostics in the temporary test process only.
@@ -44,10 +44,16 @@ def main():
             "faulthandler.dump_traceback_later(8)\n"
             "import app\n"
             "from catalog import CatalogClient\n"
+            "from musicbrainz import MusicBrainzClient, PURCHASE_RELATION\n"
             "sample = {'kind':'song','trackId':1,'trackName':'Night Window (Original Mix)','artistName':'Example Artist',"
             "'trackTimeMillis':193000,'trackPrice':0.99,'currency':'GBP','primaryGenreName':'Electronic',"
             "'trackViewUrl':'https://music.apple.com/gb/album/example/1?i=1'}\n"
             "app.CatalogClient = lambda: CatalogClient(fetcher=lambda query: [sample])\n"
+            "recording = {'id':'00000000-0000-4000-8000-000000000001','title':'Night Window (Original Mix)','length':193000,"
+            "'artist-credit':[{'name':'Example Artist','artist':{'name':'Example Artist'}}],"
+            "'relations':[{'type-id':PURCHASE_RELATION,'target-type':'url','direction':'forward','ended':False,"
+            "'url':{'resource':'https://example-label.bandcamp.com/track/night-window'}}]}\n"
+            "app.MusicBrainzClient = lambda: MusicBrainzClient(fetcher=lambda isrc: {'isrc':isrc,'recordings':[recording]})\n"
             "try:\n"
             "    sys.exit(app.main())\n"
             "finally:\n"
@@ -92,7 +98,7 @@ def main():
                     time.sleep(.05)
             assert status == 200, (status, body)
             health = json.loads(body)
-            assert health["app"] == "DJList" and health["api_version"] == 3
+            assert health["app"] == "DJList" and health["api_version"] == 4
             assert health["static_snapshot"] and health["build_id"]
             status, body = request("/api/state")
             assert status == 200
@@ -131,12 +137,35 @@ def main():
             assert real["store_lookup"]["offer"]["price"]["currency"] == "GBP"
             assert (real["notes"], real["tags"], real["purchase_url"], real["owned"]) == \
                 ("Keep my notes", "my tag", "https://example.test/manual-choice", False)
+            more_path = "/api/tracks/%s/shop-links" % real_id
+            assert request(more_path, "POST", {})[0] == 403
+            status, body = request(more_path, "POST", {}, token)
+            more = json.loads(body)
+            assert status == 200 and more["status"] == "found" and more["links"][0]["provider"] == "bandcamp", (status, body)
+            # Prepare a linked track, then model a renamed music folder.
+            status, body = request("/api/tracks/%s" % real_id, "PATCH",
+                                   {"local_file": str(audio), "owned": False, "prep_status": "reviewed"}, token)
+            assert status == 200, (status, body)
+            before_move = json.loads(request("/api/state")[1])["tracks"][0]
             music.rename(root / "Disconnected")
             status, body = request("/api/refresh-libraries", "POST", {"media": True, "xml": True}, token)
             offline = json.loads(body)
             assert status == 200 and offline["partial"] and offline["xml"]["entry_count"] == 1
             assert any(error["source"] == "media" for error in offline["errors"])
             assert offline["suggestions"] and not offline["suggestions"][0]["candidates"][0]["available"]
+            new_music = root / "Disconnected"
+            assert request("/api/settings", "PATCH", {"music_root": str(new_music)}, token)[0] == 200
+            assert request("/api/relocation-preview", "POST", {"old_root": str(music)})[0] == 403
+            status, body = request("/api/relocation-preview", "POST", {"old_root": str(music.resolve())}, token)
+            plan = json.loads(body)
+            assert status == 200 and plan["summary"]["eligible"] == 1, (status, body)
+            status, body = request("/api/relocation-apply", "POST", {"token": plan["token"], "track_ids": [real_id]}, token)
+            assert status == 200 and json.loads(body)["updated"] == 1, (status, body)
+            after_move = json.loads(request("/api/state")[1])["tracks"][0]
+            assert Path(after_move["local_file"]) == (new_music / audio.name).resolve() and after_move["file_available"]
+            for field in ("owned", "prep_status", "tags", "notes", "musical_key", "bpm", "purchase_url"):
+                assert after_move[field] == before_move[field], (field, before_move[field], after_move[field])
+            assert request("/api/relocation-apply", "POST", {"token": plan["token"], "track_ids": [real_id]}, token)[0] == 409
             status, original = request("/app.js")
             assert status == 200 and original
             with (app / "web/app.js").open("ab") as file:
@@ -146,7 +175,7 @@ def main():
             assert collision.returncode != 0
             output = collision.stdout + collision.stderr
             assert "DJList" in output and "Control+C" in output, output
-            print("PASS: real HTTP edits, library/XML refresh, offline duplicate warning, background store lookup with a simulated provider, manual-field preservation, asset snapshot and occupied-port guidance")
+            print("PASS: real HTTP edits, XML/offline inventory, simulated shop discovery, reviewed moved-file relinking, manual-field preservation, asset snapshot and occupied-port guidance")
         except Exception:
             if process.poll() is None:
                 process.terminate()

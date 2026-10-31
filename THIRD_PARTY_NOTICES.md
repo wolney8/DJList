@@ -46,3 +46,40 @@ or overlays, and accompanied by the Spotify mark and a link to that track. Image
 bytes are not downloaded into the music library or bundled with the application.
 Spotify retains rights in its marks; artwork belongs to its respective owners.
 Missing or failed artwork uses DJList's music-note icon with a stable colour.
+
+## MusicBrainz recording metadata and shop links
+
+The optional **Find more shop links** action uses MusicBrainz, a community
+metadata project operated by the MetaBrainz Foundation. When a network lookup
+is needed, DJList sends the selected track's ISRC recording identifier to
+MusicBrainz. It compares the returned artist, title, version notes and duration
+locally, and displays eligible direct Bandcamp and Beatport purchase links with
+a link to their MusicBrainz recording source. These are community suggestions;
+the shop page and recording still need to be checked.
+
+MusicBrainz classifies recordings, ISRCs, relationships and URLs as core data,
+released under **CC0**. DJList's additional-link lookup uses that core metadata.
+It does not request supplementary annotations, tags or genre associations,
+which have a separate licence. The MusicBrainz database licence does not grant
+rights to retailer websites, vendor artwork, recordings or other vendor assets.
+
+The client identifies DJList in its User-Agent and spaces network requests by
+at least **1.05 seconds**. Complete results, including no-match results, have a
+bounded **seven-day in-memory metadata cache**. Errors and incomplete results
+are not cached. **Check again** bypasses that cache while retaining request
+pacing and any server-requested cooldown. MusicBrainz lookup is manual; Spotify
+refresh does not trigger it or poll its metadata for changes.
+
+This integration does not fetch MusicBrainz audio or imagery, retrieve retailer
+pages, provide previews, or supply prices, BPM or musical key. It does not infer
+those values from the existence of a purchase link. MusicBrainz's API service
+usage terms are separate from its database licence; its documentation describes
+free non-commercial access and links to commercial service plans.
+
+Official sources:
+
+- API and ISRC lookup: https://musicbrainz.org/doc/MusicBrainz_API
+- Request pacing and identification: https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting
+- Database licence: https://musicbrainz.org/doc/About/Data_License
+- Core and supplementary data: https://musicbrainz.org/doc/MusicBrainz_Database
+- Recording purchase-link relationship: https://musicbrainz.org/relationship/92777657-504c-4acb-bd33-51a201bd57e1
