@@ -268,6 +268,13 @@ The 195-test Python result above is local evidence. GitHub records the CI result
 separately for each commit. Inspect the run matching the installed commit in the
 [Actions view](https://github.com/wolney8/DJList/actions).
 
+The initial v0.5 macOS run passed all 195 unit/regression tests, then exposed
+an expected-path error in the HTTP smoke test: a macOS temporary-directory
+alias was compared with DJList's canonical saved path. The assertion now
+expects the resolved location and separately checks notes/tags. A local smoke
+run through an aliased temporary directory exercises the same distinction;
+application path validation was not weakened.
+
 ## Unverified and deferred
 
 **Unverified:** native Mac picker interaction and permissions; the user's

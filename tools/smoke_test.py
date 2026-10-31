@@ -156,8 +156,10 @@ def main():
             saved_purchase = next(row for row in json.loads(request("/api/state")[1])["tracks"] if row["id"] == purchase_id)
             assert (saved_purchase["owned"], saved_purchase["prep_status"], saved_purchase["bpm"], saved_purchase["musical_key"]) == \
                 (True, "downloaded", "170", "C minor")
-            assert (saved_purchase["notes"], saved_purchase["tags"], saved_purchase["local_file"]) == \
-                ("Keep inbox notes", "my inbox tag", str(purchase))
+            assert (saved_purchase["notes"], saved_purchase["tags"]) == ("Keep inbox notes", "my inbox tag")
+            # macOS temporary folders can have a /var alias for /private/var.
+            # DJList stores canonical file paths after its boundary checks.
+            assert Path(saved_purchase["local_file"]) == purchase.resolve(), saved_purchase["local_file"]
             assert audio.read_bytes() == original_bytes and purchase.read_bytes() == purchased_bytes
             refresh_path = "/api/tracks/%s/refresh-store" % real_id
             assert request(refresh_path, "POST", {})[0] == 403
