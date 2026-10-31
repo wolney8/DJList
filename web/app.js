@@ -2,8 +2,9 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const UI_VERSION = "0.5.0";
-const API_VERSION = 5;
+const UI_VERSION = "0.6.0";
+const API_VERSION = 6;
+let libraryTools = null;
 const trackModel = window.DJListModel;
 const RESTART_MESSAGE = "Stop DJList in its Terminal window (Control+C), then open the updated launcher and reload this page.";
 const ITUNES_BADGE_PATH = "/assets/download-on-itunes.svg";
@@ -148,7 +149,7 @@ async function api(path, options = {}) {
   catch { throw new Error("DJList is not responding. Check that its local window is still running, then try again."); }
   let result;
   try { result = await response.json(); } catch { throw new Error("DJList returned an unreadable response. Please try again."); }
-  if (!response.ok) { const error = new Error(result.error || `The request failed (${response.status}).`); error.status = response.status; throw error; }
+  if (!response.ok) { const error = new Error(result.error || `The request failed (${response.status}).`); error.status = response.status; error.code = result.code; throw error; }
   return result;
 }
 function mutation(path, body = {}, method = "POST") { return api(path, {method, body: JSON.stringify(body)}); }
@@ -203,6 +204,7 @@ function render() {
   $("#sync-info").textContent = demo ? "Demo edits are saved separately from your real collection." : "Spotify supplies the list. Purchased files stay on your drive.";
   renderLibrarySources(); renderStoreJob(ui.data.store_job || {}); renderLibraryWatch(ui.data.library_watch || {});
   updateControls(); renderTracks();
+  libraryTools?.stateChanged(ui.data);
 }
 function renderDriveStatus() {
   const drive = ui.data.drive || {};
@@ -510,7 +512,7 @@ async function refreshStoreTracks(button, id = null) {
 }
 async function browsePath(button) {
   if (pickerUI.pending || !ui.runtimeCompatible) return;
-  const kind = {music_root: "music", rekordbox_xml: "xml", download_root: "downloads"}[button.dataset.picker];
+  const kind = {music_root: "music", rekordbox_xml: "xml", download_root: "downloads", rekordbox_db: "db", rekordbox_backup_root: "backups"}[button.dataset.picker];
   if (!kind) return;
   const epoch = pickerUI.epoch;
   pickerUI.pending = true; updateControls(); showError("#settings-error", "");
@@ -857,6 +859,14 @@ function renderLibraryReview(result) {
     if (entry.metadata_message && !["read", "empty"].includes(entry.metadata_status)) card.append(el("p", "metadata-provenance", entry.metadata_message));
     const path = el("details", "inventory-path"); path.append(el("summary", "", "File location"), el("p", "", entry.path || "Location not supplied")); card.append(path);
     if (entry.duplicate || entry.duplicate_group || entry.possible_duplicate) card.append(el("p", "duplicate-note", "Possible duplicate · compare the versions and files"));
+    if (ui.data.capabilities?.cue_planning) {
+      const cueButton = el("button", "button button-outlined", "Plan cue markers");
+      cueButton.type = "button";
+      cueButton.disabled = !entry.available || entry.within_root === false;
+      cueButton.setAttribute("aria-label", `Plan cue markers for ${entry.title || entry.name || "this track"}`);
+      cueButton.addEventListener("click", () => libraryTools?.openCue(entry, cueButton));
+      card.append(cueButton);
+    }
     list.append(card);
   }
   const groups = Array.isArray(result.duplicate_groups) ? result.duplicate_groups : [];
@@ -878,6 +888,8 @@ function openSettings() {
   $("#playlist-url").value = settings.playlist_url || "";
   $("#music-root").value = settings.music_root || "";
   $("#rekordbox-db").value = settings.rekordbox_db || "";
+  $("#rekordbox-backup-root").value = settings.rekordbox_backup_root || "";
+  $("#auto-rekordbox-backup").checked = settings.auto_rekordbox_backup !== false;
   $("#rekordbox-xml").value = settings.rekordbox_xml || "";
   $("#download-root").value = settings.download_root || "";
   $("#auto-store-lookup").checked = settings.auto_store_lookup !== false;
@@ -886,7 +898,7 @@ function openSettings() {
   $("#path-picker-status").textContent = pickerUI.pending ? "A file chooser is still open on your Mac. Finish or cancel it before choosing another location." : "";
   showError("#settings-error", ""); $("#settings-dialog").showModal(); updateControls();
 }
-function settingsValues() { return {spotify_client_id: $("#client-id").value.trim(), playlist_url: $("#playlist-url").value.trim(), music_root: $("#music-root").value.trim(), rekordbox_db: $("#rekordbox-db").value.trim(), rekordbox_xml: $("#rekordbox-xml").value.trim(), download_root: $("#download-root").value.trim(), auto_store_lookup: $("#auto-store-lookup").checked, auto_library_refresh: $("#auto-library-refresh").checked}; }
+function settingsValues() { return {spotify_client_id: $("#client-id").value.trim(), playlist_url: $("#playlist-url").value.trim(), music_root: $("#music-root").value.trim(), rekordbox_db: $("#rekordbox-db").value.trim(), rekordbox_xml: $("#rekordbox-xml").value.trim(), download_root: $("#download-root").value.trim(), auto_store_lookup: $("#auto-store-lookup").checked, auto_library_refresh: $("#auto-library-refresh").checked, rekordbox_backup_root: $("#rekordbox-backup-root").value.trim(), auto_rekordbox_backup: $("#auto-rekordbox-backup").checked}; }
 async function connectSpotify(button, saveSettings = false) {
   await busy(button, async () => {
     try {
@@ -1484,6 +1496,8 @@ function setTheme(theme) {
 $("#theme-toggle").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
 try { setTheme(localStorage.getItem("djlist-theme") || "dark"); } catch { setTheme("dark"); }
 
+libraryTools = window.DJLibraryTools.init({api, mutation, refresh, openSettings, el, icon, toast,
+  getData: () => ui.data, getCsrf: () => ui.csrf, isCompatible: () => ui.runtimeCompatible});
 refresh().catch(error => {
   $("#loading-state").hidden = true; $("#empty-state").hidden = false;
   $("#empty-title").textContent = "DJList could not load";

@@ -1,9 +1,10 @@
 # DJList
 
 **A local Spotify wishlist and DJ music tracker.** Find purchase candidates,
-listen to permitted store previews, record ownership and link your audio files.
+record ownership, review missing files and duplicates, keep database snapshots
+and prepare selected cue markers for a separate Rekordbox XML export.
 
-Version **0.5.0 — 31 October 2026**. Development build; see [VERIFICATION.md](VERIFICATION.md) for
+Version **0.6.0, API 6 — 31 October 2026**. Development build; see [VERIFICATION.md](VERIFICATION.md) for
 the checks performed and [ROADMAP.md](ROADMAP.md) for outstanding work and access
 requirements.
 
@@ -253,6 +254,36 @@ and external-drive reads remain to be checked on the user's Mac. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the bundled reader's licence
 and provenance.
 
+## Check missing files and duplicates
+
+After **Refresh media** and **Refresh XML**, open **Library health**. Search,
+filter and page through missing files, disconnected drives, possible duplicates
+and paths needing review. **Export report** saves the filtered findings as CSV.
+A disconnected drive is reported separately from a file missing on an available
+drive; existing ownership and library records are kept.
+
+For a missing file already linked to a DJList track, choose **Review replacement
+file**, check the proposed recording and choose **Confirm file link**. Candidates
+come from the indexed music folder and can include renamed or reorganized files
+when their metadata still matches. Nothing is selected automatically. The review
+expires after ten minutes; files, folders, metadata and the previous link are
+checked again before the selected DJList address changes. Ownership, notes,
+tags, BPM/key and preparation state are preserved.
+
+This replacement review requires the old file to be confirmed missing inside an
+available selected folder. Reconnect an offline drive first. Use **Find moved
+files** for an old folder or renamed SSD, as described below. An XML-only entry
+without a saved DJList track link can be reviewed but is not relinked by this
+control. Update its location in Rekordbox separately and export fresh XML.
+
+For possible duplicates, **Check file contents** reads the complete files in
+that group and compares SHA-256 checksums. A matching result confirms identical
+file bytes. Different bytes can mean different tags, formats or recordings;
+they do not establish that the songs sound different. Comparisons are bounded,
+only cover eligible files in the configured music folder and become stale when
+files change. This is not an acoustic duplicate search across every file. DJList
+never deletes, merges or moves a duplicate.
+
 ## Review purchased files in the download inbox
 
 Choose **Download inbox → Scan inbox** after saving its folder in Settings.
@@ -288,8 +319,10 @@ Nothing is selected by default.
 This works when the folder layout and filenames beneath the old and current
 folders are unchanged. DJList maps those relative paths and compares previously
 indexed file sizes when available. It does not compare audio content. Missing
-files, size mismatches and symlinks cannot be selected; renamed files or a
-different folder layout need manual linking.
+files, size mismatches and symlinks cannot be selected. For individually renamed
+or reorganized files inside an available selected folder, use **Library health
+→ Review replacement file** to inspect metadata-based candidates. If no suitable
+candidate is available, select the file manually in track details.
 
 The preview expires after **10 minutes**. If files, folders or saved links change,
 make a fresh preview. Each preview holds up to 500 proposed links; after updating
@@ -304,8 +337,8 @@ locations change, then use **Refresh media** and **Refresh XML** in DJList.
 
 Set your actual music folder in Settings; external SSDs are supported. New
 installations suggest `~/Music/DJ Music`. Existing settings are preserved. The
-optional Rekordbox database path is configuration only; DJList does not open or
-modify the live database.
+optional Rekordbox database path selects the actual `master.db` to copy for
+backup while Rekordbox is closed. It is not used to query or edit the collection.
 
 Scanning reads filenames, file information and supported embedded metadata.
 Suggestions need confirmation. It never moves, renames, deletes or edits audio.
@@ -327,11 +360,52 @@ Include that folder in your backups. Updating the application folder does not
 move those records. CSV export is a readable record copy, not a full database
 backup. Demo records stay separate from the real collection.
 
-## Rekordbox database access
+## Keep Rekordbox database snapshots
 
-DJList **does not open or edit `master.db` in 0.5.0**. The optional database path
-under advanced Settings is a setup note only. XML is the current source of
-Rekordbox collection data, including its existing analyzed BPM/key values.
+1. In **Settings**, choose the **active Rekordbox master.db** that your current
+   library uses. Leave **Backup folder** blank to use DJList's own data folder,
+   or choose a separate destination. Save settings.
+2. Close Rekordbox, CueGen and other library-writing tools. Open **Rekordbox
+   backups** and choose **Back up now**. Check the result before relying on it.
+3. Keep **Back up the database daily** enabled and leave DJList running when you
+   want automatic checks. Use **Check backup** in backup history to compare
+   an existing snapshot with its recorded checksums again.
+
+The default destination on macOS is:
+
+```text
+~/Library/Application Support/DJList/rekordbox-backups/
+```
+
+Automatic backups are enabled by default after an active database path is saved.
+They are due initially and then every 24 hours after a successful source check, while
+DJList remains open and Rekordbox is closed. An unchanged source rechecks the
+previous snapshot instead of making another copy. A busy, disconnected or
+unverifiable source waits; DJList never falls back to another database. Automatic
+backups pause in demo mode and stop when DJList exits.
+
+Each new snapshot gets its own folder, copied `master.db`, optional companion
+`masterPlaylists6.xml`, and a manifest of checksums. Existing snapshots are never
+automatically deleted or overwritten, and there is no restore operation in the
+app. Failed or interrupted copies remain visibly incomplete. Keep the backup
+destination separate from the database folder; a destination on the same drive
+cannot protect against losing that drive.
+
+**These are database snapshots, not full Rekordbox library backups.** They do
+not include analysis files or your music. Use Rekordbox's **File → Library →
+Backup Library** as well, particularly before importing cues or changing a
+collection. Matching file bytes verifies the copy, not database health or a
+successful restoration. Actual Mac/SSD backup and restore behavior remains
+unverified; see [VERIFICATION.md](VERIFICATION.md).
+
+### How database access is limited
+
+The backup component opens the explicitly selected source as a raw read-only
+file (`O_RDONLY`), with file locks, bounded copying and identity checks. It does
+not open a SQLite/SQLCipher connection, query the collection, checkpoint a
+journal, recover a database, or write to `master.db`. Active write journals or
+uncertain process/locking state pause the operation. XML remains the source of
+Rekordbox collection metadata, including existing analyzed BPM/key values.
 
 A read-only database adapter is feasible future work. It must support the
 specific Rekordbox version, its SQLCipher encryption and schema, and a
@@ -346,6 +420,44 @@ Writing tracks, tags or cues back needs a separate, controlled design. It is
 deferred until version compatibility, a restorable library backup, a closed
 Rekordbox session and an explicitly reviewed small batch can be checked on the
 user's Mac. No direct writes or CueGen execution are enabled in this build.
+
+## Review and export cue markers
+
+Export a fresh XML from Rekordbox to the saved file, then use **Refresh XML**.
+In **Review library**, choose **Plan cue markers** beside one available track.
+Choose the spacing and maximum number of new hotcues, then **Create suggestions**.
+Check the recording and timing, select only the suggestions you want and choose
+**Export selected cues**. A **Save XML file** link remains available if the
+browser does not start the download automatically.
+
+DJList calculates positions from the track's existing 4/4 XML beatgrid, including
+tempo changes. It preserves the complete original track metadata, tempo markers,
+cues and loops, and adds only selected markers in unused hotcue slots A–H.
+Positions within four grid bars of an existing cue or loop boundary are skipped.
+Nothing is preselected. The review expires after ten minutes, and changed source
+files or folder settings require a fresh plan.
+
+Refresh XML with the music drive connected before your first cue review after
+updating DJList. The planner compares the audio-file identity recorded at XML
+refresh with the current file; a changed file or older record needs another
+refresh. This check cannot prove that the XML grid fits the recording, so listen
+and check the timing before importing.
+
+If that XML track has no grid, enter a BPM between **20 and 400** and its first
+downbeat in seconds, then confirm you checked those values. The resulting grid
+is constant 4/4. DJList does not analyze audio to find beats, phrases, intros,
+drops or outros, and it does not replace an existing grid with entered values.
+A file must be in the saved, refreshed XML so existing cues can be preserved.
+
+The download is a separate, uniquely named one-track XML file. DJList does not
+apply it to your collection. Before manually importing it, make a full Rekordbox
+library backup and try one reviewed track on your actual Rekordbox version.
+Check that its original cues, loops and beatgrid remain correct. Import behavior
+and compatibility on your Mac remain unverified.
+
+The [open-source tools assessment](docs/OPEN_SOURCE_DJ_TOOLS.md) explains the
+roles of CueGen, pyrekordbox, librosa and other possible additions. They have
+been researched, not installed or run by this build.
 
 ## Privacy and operation
 
@@ -362,6 +474,11 @@ own database for inventory and matching. The included reader makes no network
 requests and does not save a copy of the audio. Native Browse controls open a
 chooser on the computer running DJList when you request one.
 
+Requested duplicate comparisons read audio bytes locally without decoding or
+uploading them. Database snapshots and their manifests stay in the configured
+local backup folder. Cue export reads the saved XML and file identities; it
+does not read audio content or the Rekordbox database.
+
 The public repository contains source, tests and documentation. Keep personal
 Client IDs, settings, playlists, databases, tokens, logs and music outside Git.
 
@@ -372,6 +489,7 @@ python3 -m unittest discover -s tests -v
 python3 tools/smoke_test.py
 node --test tests/test_ui_model.js
 node --check web/app.js
+node --check web/library-tools.js
 node --check web/track-model.js
 bash -n Start_DJList.command
 ```
@@ -390,8 +508,10 @@ source and checksums. No separate package installation is needed to launch.
 
 [ROADMAP.md](ROADMAP.md) separates implemented features, checks requiring the
 user's Mac, provider-access requirements and deferred development. Automatic
-purchasing, full-track downloading, audio moves and Rekordbox/cue writes are
-not implemented. Preparation statuses record your own progress.
+purchasing, full-track downloading, audio moves, audio analysis and direct
+Rekordbox/cue writes are not implemented. Reviewed XML cue export is available;
+the actual import is a separate user action. Preparation statuses record your
+own progress.
 
 ## References
 

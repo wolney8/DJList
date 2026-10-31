@@ -43,14 +43,18 @@ from library_watch import LibraryWatcher, configuration as watch_configuration
 from native_picker import NativePicker
 from setup_checks import check_setup
 from relocation import _root as file_root, _snapshot as file_snapshot
+from rekordbox_backups import RekordboxBackups
+from library_audit import LibraryAudit
+from cue_planner import CuePlanner
 
-VERSION = "0.5.0"
-API_VERSION = 5
+VERSION = "0.6.0"
+API_VERSION = 6
 DEFAULTS = {
     "spotify_client_id": "",
     "playlist_url": "", "music_root": "~/Music/DJ Music",
     "rekordbox_db": "", "rekordbox_xml": "", "auto_store_lookup": True,
     "download_root": "", "auto_library_refresh": True,
+    "rekordbox_backup_root": "", "auto_rekordbox_backup": True,
 }
 MANUAL = {"owned": False, "tags": "", "musical_key": "", "bpm": "", "energy": "",
           "purchase_url": "", "local_file": "", "cue_notes": "", "notes": "", "prep_status": "wishlist"}
@@ -320,6 +324,9 @@ class Application:
         self.library = LibraryInventory(self.store)
         self.relocation = RelocationPlanner(self.store)
         self.inbox = DownloadInbox(self.store, self.library)
+        self.library_audit = LibraryAudit(self.store, self.library)
+        self.cue_planner = CuePlanner(self.store, self.library)
+        self.backups = RekordboxBackups(self.store, self.work_lock)
         self.picker = NativePicker()
         self.library_watcher = LibraryWatcher(self.store.settings, self._automatic_library_refresh, self.library.invalidate)
         self.lookup = StoreLookupQueue(self.store, lambda query, reference, force=False: self.catalog.search(query, reference, force=force))
@@ -327,12 +334,48 @@ class Application:
     def close(self):
         self._closing = True
         self.library_watcher.close()
+        self.backups.close()
         self.lookup.close()
         self.relocation.clear()
         self.inbox.clear()
+        self.library_audit.clear()
+        self.cue_planner.clear()
 
     def start_watchers(self):
         self.library_watcher.start()
+        self.backups.start()
+
+    def library_task(self, callback, *args, **kwargs):
+        """Serialize reviewed file work with folder changes; annotations stay usable."""
+        if not self.work_lock.acquire(blocking=False):
+            raise AppError("Another library action is running. Try again when it finishes.", 409)
+        try:
+            if self._closing or self.namespace() != "real":
+                raise AppError("Open your real collection before using library tools.", 409)
+            return callback(*args, **kwargs)
+        finally:
+            self.work_lock.release()
+
+    def audit_review(self, parameters, export=False):
+        allowed = {"q", "kind"} if export else {"q", "kind", "page", "page_size"}
+        if set(parameters) - allowed or any(len(value) != 1 for value in parameters.values()):
+            raise AppError("Choose valid library-health filters.")
+        query = parameters.get("q", [""])[0]
+        kind = parameters.get("kind", ["all"])[0]
+        if export:
+            return self.library_task(self.library_audit.export_report, query=query, kind=kind)
+        try:
+            page = int(parameters.get("page", ["1"])[0])
+            size = int(parameters.get("page_size", ["25"])[0])
+        except (TypeError, ValueError):
+            raise AppError("Choose a valid library-health page.") from None
+        return self.library_task(self.library_audit.review, query=query, kind=kind, page=page, page_size=size)
+
+    def repair_missing_link(self, token, entry_id):
+        result = self.library_task(self.library_audit.apply_relink, token, entry_id)
+        self.library.invalidate()
+        self.library_watcher.changed()
+        return result
 
     def library_watch_status(self):
         settings = self.store.settings()
@@ -416,10 +459,11 @@ class Application:
                 "connection": {"connected": connected, "needs_sign_in": not connected,
                                "callback_url": self.origin + "/callback", "session_only": True,
                                "last_error": self.last_auth_error},
-                "drive": {"available": root.is_dir(), "music_root": str(root),
-                          "rekordbox_db_exists": bool(settings["rekordbox_db"] and Path(settings["rekordbox_db"]).expanduser().is_file())},
+                "drive": {"available": namespace == "real" and root.is_dir(), "music_root": str(root),
+                          "rekordbox_db_exists": bool(namespace == "real" and settings["rekordbox_db"] and Path(settings["rekordbox_db"]).expanduser().is_file())},
                 "library": library, "suggestions": suggestions,
                 "library_watch": self.library_watch_status(),
+                "backups": self.backups.status(),
                 "relocation": {"previous_music_root": settings.get("previous_music_root", "") if namespace == "real" else "",
                                "limit": RELOCATION_LIMIT},
                 "store_job": self.lookup.status() if namespace == "real" else StoreLookupQueue._idle(),
@@ -433,8 +477,11 @@ class Application:
                                  "file_relink": True,
                                  "native_picker": self.picker.supported, "setup_check": True,
                                  "library_watch": True, "file_metadata": True, "download_inbox": True,
+                                 "library_audit": True, "duplicate_verification": True,
+                                 "rekordbox_backups": True, "cue_planning": True,
                                  "preview_audio": "assets/download-on-itunes.svg" in self.assets,
-                                 "cue_generation": False, "rekordbox_xml_export": False, "file_moves": False}}
+                                 "cue_generation": False, "rekordbox_xml_export": True, "file_moves": False,
+                                 "rekordbox_database_writes": False}}
 
     def change_settings(self, updates):
         if not self.work_lock.acquire(blocking=False):
@@ -449,7 +496,7 @@ class Application:
             raise AppError("Only the displayed settings can be changed.")
         clean = {}
         for key, value in updates.items():
-            if key in {"auto_store_lookup", "auto_library_refresh"}:
+            if key in {"auto_store_lookup", "auto_library_refresh", "auto_rekordbox_backup"}:
                 if not isinstance(value, bool):
                     raise AppError("Automatic refresh options must be checked or unchecked.")
                 clean[key] = value
@@ -465,17 +512,19 @@ class Application:
             if old["source_id"] and source != old["source_id"]:
                 raise AppError("This collection is linked to another playlist. Keep its original playlist link.", 409)
             clean["playlist_url"] = url
-        for key in ("music_root", "rekordbox_db", "rekordbox_xml", "download_root"):
+        for key in ("music_root", "rekordbox_db", "rekordbox_xml", "download_root", "rekordbox_backup_root"):
             if key in clean:
-                if key in ("rekordbox_db", "rekordbox_xml", "download_root") and not clean[key]:
+                if key in ("rekordbox_db", "rekordbox_xml", "download_root", "rekordbox_backup_root") and not clean[key]:
                     continue
                 if not clean[key] or not Path(clean[key]).expanduser().is_absolute():
                     raise AppError("Use an absolute folder/file path for " + key.replace("_", " ") + ".")
                 clean[key] = str(Path(clean[key]).expanduser())
-                if key in {"music_root", "download_root"} and (Path(clean[key]) == Path(Path(clean[key]).anchor) or ".." in Path(clean[key]).parts):
-                    raise AppError("Choose a specific music or download folder, without '..' or the filesystem root.")
+                if Path(clean[key]) == Path(Path(clean[key]).anchor) or ".." in Path(clean[key]).parts:
+                    raise AppError("Choose a specific folder or file, without '..' or the filesystem root.")
                 if key == "rekordbox_xml" and Path(clean[key]).suffix.lower() != ".xml":
                     raise AppError("Choose the path to a Rekordbox .xml export.")
+                if key == "rekordbox_db" and Path(clean[key]).name != "master.db":
+                    raise AppError("Choose the active Rekordbox master.db file for database backups.")
         root_changed = clean.get("music_root", old["music_root"]) != old["music_root"]
         if root_changed:
             # The previous configured root is still authorized here. Resolve its
@@ -491,6 +540,8 @@ class Application:
             self.relocation.clear()
         if root_changed or clean.get("download_root", old["download_root"]) != old["download_root"]:
             self.inbox.clear()
+        self.library_audit.clear()
+        self.cue_planner.clear()
         self.library_watcher.changed()
         if clean.get("auto_store_lookup") is False:
             self.lookup.cancel()
@@ -574,6 +625,8 @@ class Application:
             self.lookup.cancel()
             self.relocation.clear()
             self.inbox.clear()
+            self.library_audit.clear()
+            self.cue_planner.clear()
         if enabled and not self.store.rows("demo"):
             examples = [
                 ("Night Window", "Example Artist", "Original Mix"),
@@ -989,6 +1042,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_data(200, self.app.library_watch_status())
                 if path == "/api/setup-check":
                     return self.send_data(200, self.app.setup_check())
+                if path == "/api/backups":
+                    return self.send_data(200, self.app.backups.status())
+                if path in {"/api/library-audit", "/api/library-audit.csv"}:
+                    try:
+                        parameters = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=4)
+                    except ValueError:
+                        raise AppError("Choose valid library-health filters.") from None
+                    report = path.endswith(".csv")
+                    result = self.app.audit_review(parameters, export=report)
+                    if report:
+                        return self.send_data(200, result, "text/csv; charset=utf-8", {"Content-Disposition": 'attachment; filename="DJList-library-health.csv"'})
+                    return self.send_data(200, result)
                 if path == "/api/library-review":
                     try:
                         parameters = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=8)
@@ -1024,6 +1089,36 @@ class Handler(BaseHTTPRequestHandler):
                 if set(data) != {"kind"}:
                     raise AppError("Choose only which folder or XML file to browse for.")
                 result = self.app.browse(data.get("kind"))
+            elif self.command == "POST" and path == "/api/backups/create":
+                if data:
+                    raise AppError("Backups use the database and destination saved in Settings.")
+                result = self.app.library_task(self.app.backups.create)
+            elif self.command == "POST" and path == "/api/backups/verify":
+                if set(data) != {"backup_id"}:
+                    raise AppError("Choose one saved backup to check.")
+                result = self.app.library_task(self.app.backups.verify, data.get("backup_id"))
+            elif self.command == "POST" and path == "/api/duplicates/verify":
+                if set(data) != {"group_id"}:
+                    raise AppError("Choose one duplicate group to compare.")
+                result = self.app.library_task(self.app.library_audit.verify_duplicates, data.get("group_id"))
+            elif self.command == "POST" and path == "/api/missing/preview":
+                if set(data) != {"track_id"}:
+                    raise AppError("Choose one missing DJList link to review.")
+                result = self.app.library_task(self.app.library_audit.preview_relink, data.get("track_id"))
+            elif self.command == "POST" and path == "/api/missing/apply":
+                if set(data) != {"token", "entry_id"}:
+                    raise AppError("Choose a file from a fresh missing-file review.")
+                result = self.app.repair_missing_link(data.get("token"), data.get("entry_id"))
+            elif self.command == "POST" and path == "/api/cues/plan":
+                if set(data) - {"entry_id", "options"} or "entry_id" not in data:
+                    raise AppError("Choose a library track and cue spacing.")
+                result = self.app.library_task(self.app.cue_planner.plan, data.get("entry_id"), data.get("options", {}))
+            elif self.command == "POST" and path == "/api/cues/export":
+                if set(data) != {"token", "selected_ids"}:
+                    raise AppError("Select cue suggestions from a fresh plan.")
+                result = self.app.library_task(self.app.cue_planner.export, data.get("token"), data.get("selected_ids"))
+                return self.send_data(200, result["xml"], "application/xml; charset=utf-8",
+                                      {"Content-Disposition": 'attachment; filename="%s"' % result["filename"]})
             elif self.command == "POST" and path == "/api/inbox-preview":
                 if data:
                     raise AppError("The inbox uses the download folder saved in Settings.")
@@ -1088,7 +1183,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise AppError("This action is not available.", 404)
             self.send_data(200, result)
         except AppError as error:
-            self.send_data(error.status, {"error": str(error)})
+            payload = {"error": str(error)}
+            if getattr(error, "code", None):
+                payload["code"] = error.code
+            self.send_data(error.status, payload)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception:
@@ -1137,7 +1235,7 @@ def main(argv=None):
     print("DJList %s — %s" % (VERSION, app.origin), flush=True)
     print("App folder: %s" % app.app_dir, flush=True)
     print("Your DJList records: %s" % app.store.directory, flush=True)
-    print("Spotify sign-in lasts for this run. Audio metadata is read-only; the live Rekordbox database is not opened.", flush=True)
+    print("Spotify sign-in lasts for this run. Audio is read-only; database backups only copy bytes while Rekordbox is closed.", flush=True)
     if not args.no_browser:
         webbrowser.open(app.origin)
     try:

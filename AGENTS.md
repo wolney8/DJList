@@ -1,5 +1,8 @@
 # DJList operating rules
 
+Current implementation: **0.6.0 / API 6**. These rules include the narrowly
+scoped raw database-snapshot reader and reviewed XML cue export described below.
+
 ## Product goal
 
 Build a local Mac application with a browser interface for moving from a Spotify
@@ -27,11 +30,23 @@ Rekordbox library, annotations and audio files.
 - Read embedded audio metadata only within explicitly selected music or
   download folders. Keep bounded reads, file-identity checks and source labels;
   unknown BPM/key must remain unknown rather than being inferred as analysis.
-- No CueGen execution, direct master.db access or Rekordbox database writes in
-  the current build. A future read-only adapter needs version compatibility,
-  connection-level write prevention and a consistent view of the active database.
-- Enable future cue writes only after version compatibility, a library backup and
-  explicit selection of a small new batch have been verified on the user's Mac.
+- Permit raw `O_RDONLY` reads of the explicitly configured, closed `master.db`
+  and supported companion file solely for cold database snapshots. Require the
+  Mac process/locking checks, bounded reads, stable source identity and checked
+  copies in a separate destination; default to DJList's own data folder.
+- Do not open a SQLite/SQLCipher connection to Rekordbox, query its records,
+  recover/checkpoint journals, write to its database or execute CueGen. A future
+  read-only record adapter needs version compatibility, connection-level write
+  prevention and a consistent view of the chosen database or snapshot.
+- Database snapshots are not full library backups. Keep existing snapshots,
+  report incomplete copies and never add deletion, overwrite or restore behavior
+  to the current workflow. Daily checks run only while DJList is open and
+  Rekordbox is closed; an unchanged source reuses a verified copy.
+- Permit a separate XML download of explicitly reviewed cue suggestions while
+  preserving the original track, cues, loops and grid. Do not import it into
+  Rekordbox or modify source XML/audio. Enable future live cue writes only after
+  version compatibility, a restorable full-library backup and an explicitly
+  selected small batch have been verified on the user's Mac.
 
 ## Data integrity
 
@@ -60,6 +75,25 @@ Rekordbox library, annotations and audio files.
   Change only those DJList file paths, preserving ownership and every other
   annotation. Recheck file/root identity and reject stale batches atomically.
   Never probe arbitrary old folders or imply that relinking updates Rekordbox.
+- Library health must distinguish missing files from disconnected drives,
+  outside-folder paths and unsafe paths. Keep missing XML inventory records.
+  Replacement review may update only a confirmed missing DJList link after an
+  explicit choice; recheck the old link, candidate metadata, file/root identity
+  and settings. Preserve every other annotation and never relink offline paths
+  as though their files were confirmed missing.
+- Keep metadata duplicate suggestions separate from full-file checksum results.
+  Read eligible files only inside the selected music root, enforce read/time
+  limits, and invalidate cached hashes when file identity changes. Different
+  bytes do not prove different audio; no deletion or merge follows a match.
+- Cue reviews require a saved, refreshed XML source and an available selected
+  track whose identity still matches the audio fingerprint saved on XML import.
+  Older or offline-at-import records require a new refresh with the drive present.
+  Preserve all existing markers and fields, use unused hotcue slots,
+  skip collisions and require explicit selection. Reject stale or expired
+  reviews. A manually confirmed BPM/downbeat may supply a constant 4/4 grid only
+  when none exists; never label calculated grid positions as audio analysis or
+  detected musical phrases. Keep source/output paths separate and export names
+  unique. Demo mode must not access real backup, repair or cue workflows.
 - Keep MusicBrainz lookup optional and manual. Use the fixed ISRC endpoint,
   identify the application and respect pacing/cooldowns; do not poll for changes.
   Treat its Bandcamp/Beatport links as sourced suggestions, with unknown price,
@@ -86,6 +120,9 @@ Rekordbox library, annotations and audio files.
 
 - Test persistence, sync merge behaviour, failure recovery and local request guards.
 - Test scan/link boundaries with temporary files, never the user's live library.
+- Exercise backup and cue safeguards only with synthetic files or explicit
+  test copies. Matching backup bytes is not proof of a successful full-library
+  restore; generated XML is not proof of a correct import on the user's version.
 - Review the UI with keyboard navigation and at desktop/mobile widths.
 - Separate locally simulated checks from actual Mac, SSD and Spotify verification.
 - Exercise the startup asset snapshot and occupied-port path whenever update
@@ -96,5 +133,8 @@ Rekordbox library, annotations and audio files.
 - Keep changes scoped to the assigned files while parallel work is active.
 - Do not deploy to Vercel or another host for this local-only project.
 - Keep credentials, user databases, logs, downloaded music and QA fixtures out of Git.
+- Evaluate licenses, dependencies and compatibility before incorporating an
+  open-source DJ tool. Keep researched candidates distinct from bundled code;
+  [docs/OPEN_SOURCE_DJ_TOOLS.md](docs/OPEN_SOURCE_DJ_TOOLS.md) records the current assessment.
 - Use the public wolney8/DJList repository as the canonical source. Preserve
   remote changes and use guarded ref updates; never force-push shared history.

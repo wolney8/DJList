@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.6.0 — 31 October 2026
+
+- Advance the local interface/API contract to **API 6** and keep the startup
+  asset snapshot and version-mismatch restart checks.
+- Add **Library health** with search, issue filters, pagination and CSV export.
+  Distinguish a missing file from an unavailable selected drive, and report
+  outside-folder or unsafe paths without discarding the saved inventory.
+- Add reviewed replacement candidates for missing DJList file links, including
+  renamed or reorganized files with matching metadata. Require an available
+  selected source folder, explicit candidate selection and a fresh ten-minute
+  review. Revalidate metadata, file and root identity before changing only the
+  selected address; preserve ownership, preparation state and all annotations.
+- Add **Check file contents** for suspected duplicate groups. Compare complete
+  files with SHA-256 under bounded read-only access and retain results only
+  while file identity matches. Different tags or encodings can produce different
+  bytes without proving a different recording. No duplicate is deleted or merged.
+- Add manual and daily **Rekordbox database snapshots**, using the explicitly
+  selected `master.db` while Rekordbox and library-writing tools are closed.
+  Open the source as raw `O_RDONLY` bytes with locking and source checks; do not
+  open a SQLite/SQLCipher connection, query records, recover journals or write to
+  the database. Unavailable or busy sources wait without selecting another file.
+- Default snapshots to `rekordbox-backups` inside DJList's own data folder, with
+  an optional separate destination. Copy the optional `masterPlaylists6.xml`
+  companion, record a checksum manifest and compare copied bytes. Recheck an
+  existing snapshot when the source is unchanged. Keep previous and incomplete
+  copies; provide status/history checks without automatic deletion or restore.
+- Run due backup checks only while DJList is open and in the real collection.
+  Clearly distinguish a checked database snapshot from a full Rekordbox library
+  backup: analysis files and music are excluded, and actual restoration remains
+  unverified. Rekordbox's native **Backup Library** remains necessary.
+- Add reviewed, separate one-track **cue XML export**. Calculate suggestions
+  from an existing 4/4 XML grid, including tempo changes, while preserving all
+  original track metadata, tempo markers, cues and loops. Add only selected
+  suggestions in unused A–H slots and skip nearby existing cue/loop positions.
+- Allow an explicitly checked BPM between 20 and 400 plus a first downbeat to
+  define a constant grid only when the XML track has no grid. Use single-use
+  ten-minute reviews and revalidate source files and settings before export.
+  No audio analysis, phrase detection, automatic import or CueGen execution is
+  enabled; actual Rekordbox import behavior remains unverified.
+- Document potential open-source integrations and their boundaries in
+  [OPEN_SOURCE_DJ_TOOLS.md](docs/OPEN_SOURCE_DJ_TOOLS.md). No candidate analysis
+  engine, database adapter, executable or model was added to the runtime.
+- Retain the verification gaps in [VERIFICATION.md](VERIFICATION.md): the actual
+  Mac, external SSD, database restoration, cue import and real collection still
+  require checks separate from development fixtures.
+
 ## 0.5.0 — 31 October 2026
 
 - Add native Mac **Browse** controls for the music folder, Rekordbox XML and

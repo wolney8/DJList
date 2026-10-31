@@ -12,6 +12,8 @@ SCRIPTS = {
     "music": 'activate\nreturn POSIX path of (choose folder with prompt "Choose your DJ music folder")',
     "downloads": 'activate\nreturn POSIX path of (choose folder with prompt "Choose the folder containing your purchased downloads")',
     "xml": 'activate\nreturn POSIX path of (choose file with prompt "Choose your exported Rekordbox XML file" of type {"xml"})',
+    "db": 'activate\nreturn POSIX path of (choose file with prompt "Choose the active Rekordbox master.db to back up" of type {"db"})',
+    "backups": 'activate\nreturn POSIX path of (choose folder with prompt "Choose where to keep your Rekordbox database backups")',
 }
 
 
@@ -27,7 +29,7 @@ class NativePicker:
 
     def choose(self, kind):
         if not isinstance(kind, str) or kind not in SCRIPTS:
-            raise AppError("Choose the music folder, XML export or download inbox.")
+            raise AppError("Choose one of the displayed folders or Rekordbox files.")
         if not self.supported:
             raise AppError("Browse is available in the Mac app. You can paste a full path into Settings on this computer.", 409)
         if not self._lock.acquire(blocking=False):
@@ -47,6 +49,8 @@ class NativePicker:
                 raise AppError("The selected path could not be read. Copy its full path from Finder instead.", 409)
             if kind == "xml" and Path(path).suffix.lower() != ".xml":
                 raise AppError("Choose the exported .xml file, rather than the live Rekordbox database.")
+            if kind == "db" and Path(path).name != "master.db":
+                raise AppError("Choose the active master.db file used by Rekordbox.")
             return {"cancelled": False, "path": os.path.normpath(path)}
         except subprocess.TimeoutExpired:
             raise AppError("The file picker timed out. Choose Browse again, or paste the full path from Finder.", 409) from None

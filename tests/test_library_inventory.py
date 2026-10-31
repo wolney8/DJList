@@ -1,4 +1,5 @@
 """Persistent XML and duplicate-review checks using only disposable files."""
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import sys
@@ -95,6 +96,8 @@ class LibraryTests(unittest.TestCase):
         before = self.library.review(self.tracks(), str(self.music))
         invalid = ["<broken", '<!DOCTYPE x [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><DJ_PLAYLISTS><COLLECTION/></DJ_PLAYLISTS>',
                    '<DJ_PLAYLISTS><COLLECTION Entries="2"/></DJ_PLAYLISTS>',
+                   '<DJ_PLAYLISTS><COLLECTION Entries="' + '9' * 5000 + '"/></DJ_PLAYLISTS>',
+                   '<DJ_PLAYLISTS><COLLECTION Entries="²"/></DJ_PLAYLISTS>',
                    self.xml({"Location": "https://example.invalid/audio.mp3"}),
                    self.xml({"Location": "file:///tmp/../outside.mp3"})]
         for payload in invalid:
@@ -247,6 +250,86 @@ class LibraryTests(unittest.TestCase):
             self.assertIn("filename", " ".join(candidate["reasons"]))
             self.assertEqual((candidate["key"], candidate["bpm"]), ("8A", "132"))
         self.assertFalse(self.tracks()[0]["owned"])
+
+    def test_bounded_entries_choose_unique_paths_before_metadata_or_file_reads(self):
+        first, second = self.audio("a.flac"), self.audio("b.flac")
+        self.library.import_xml(self.xml({"Location": first.as_uri()}), str(self.music))
+        with self.store.connect() as db:
+            saved = json.loads(db.execute("SELECT metadata FROM library_entries WHERE path=?", (str(first),)).fetchone()[0])
+            db.execute("INSERT INTO files(path,root,size,mtime,title,artist) VALUES (?,?,?,?,?,?)",
+                       (str(second), str(self.music), 1, 0, "Scanned title", "Scan artist"))
+            # These records must neither be parsed nor probed for a two-path
+            # read. The first XML location is also present in files, so it
+            # must consume only one of the two selected locations.
+            db.executemany("INSERT INTO library_entries VALUES (?,?)", [
+                (str(self.music / ("z%05d.flac" % number)), "unread malformed JSON") for number in range(10000)])
+            db.executemany("INSERT INTO media_metadata VALUES (?,?,?)", [
+                (str(self.music / ("z%05d.flac" % number)), str(self.music), "unread malformed tags") for number in range(10000)])
+            db.executemany("INSERT INTO files(path,root,size,mtime,title,artist) VALUES (?,?,?,?,?,?)", [
+                (str(self.music / ("z%05d.flac" % number)), str(self.music), 1, 0, "Unread title", "Unread artist")
+                for number in range(10000)])
+            other_root = self.root / "A-other-root"
+            db.executemany("INSERT INTO files(path,root,size,mtime,title,artist) VALUES (?,?,?,?,?,?)", [
+                (str(other_root / ("a%05d.flac" % number)), str(other_root), 1, 0, "Other folder", "Unread artist")
+                for number in range(2000)])
+        original_connect = self.store.connect
+        original_info = __import__("library_inventory")._path_info
+        visits, instructions = [], [0]
+
+        def inspected(path, root):
+            self.assertIn(path, {str(first), str(second)})
+            visits.append(path)
+            return original_info(path, root)
+
+        def progress():
+            instructions[0] += 100
+            return instructions[0] > 5000  # Fail if SQLite scans/sorts all 10k rows.
+
+        @contextmanager
+        def bounded_connection():
+            with original_connect() as db:
+                db.set_progress_handler(progress, 100)
+                try:
+                    yield db
+                finally:
+                    db.set_progress_handler(None, 0)
+
+        self.library.invalidate()
+        with patch.object(self.store, "connect", bounded_connection), patch("library_inventory._path_info", side_effect=inspected):
+            entries = self.library._entries(str(self.music), limit=2)
+        self.assertEqual({row["path"] for row in entries}, {str(first), str(second)})
+        xml = next(row for row in entries if row["path"] == str(first))
+        self.assertEqual(xml["xml_audio_fingerprint"], saved["xml_audio_fingerprint"])
+        self.assertEqual(xml["source"], "rekordbox_xml")
+        self.assertLessEqual(len(visits), 4)
+        self.assertLessEqual(instructions[0], 5000)
+
+    def test_bounded_inventory_cache_cannot_mask_other_limits_or_full_inventory(self):
+        paths = [self.audio("entry-%d.flac" % index) for index in range(3)]
+        self.library.import_xml(self.xml(*[{"Location": path.as_uri()} for path in paths]), str(self.music))
+        for limit, expected in ((1, 1), (2, 2), (None, 3), (1, 1), (None, 3)):
+            with self.subTest(limit=limit):
+                self.assertEqual(len(self.library._entries(str(self.music), limit=limit)), expected)
+        for limit in (True, False, 0, -1, "2", 50002):
+            with self.subTest(invalid=limit), self.assertRaises(AppError):
+                self.library._entries(str(self.music), limit=limit)
+
+    def test_bounded_inventory_does_not_probe_selected_outside_root_paths(self):
+        outside = self.root / "A-unselected-drive" / "missing.flac"
+        self.library.import_xml(self.xml({"Location": outside.as_uri()}), str(self.music))
+        original = Path.stat
+
+        def guarded(path, *args, **kwargs):
+            if path == outside:
+                raise AssertionError("An outside-root audio path was probed")
+            return original(path, *args, **kwargs)
+
+        self.library.invalidate()
+        with patch.object(Path, "stat", guarded):
+            entries = self.library._entries(str(self.music), limit=1)
+        self.assertEqual(len(entries), 1)
+        self.assertFalse(entries[0]["available"])
+        self.assertFalse(entries[0]["within_root"])
 
 
 if __name__ == "__main__":

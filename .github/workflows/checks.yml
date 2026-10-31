@@ -34,6 +34,7 @@ jobs:
         run: |
           node --check web/app.js
           node --check web/track-model.js
+          node --check web/library-tools.js
       - name: Track table model checks
         run: node tests/test_ui_model.js
       - name: Mac launcher syntax

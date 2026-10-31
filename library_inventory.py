@@ -172,6 +172,7 @@ class LibraryInventory:
                     id INTEGER PRIMARY KEY CHECK(id=1), metadata TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS media_metadata (
                     path TEXT PRIMARY KEY, root TEXT NOT NULL, metadata TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS files_root_path ON files(root,path);
             """)
             if db.execute("SELECT 1 FROM library_snapshot WHERE id=1").fetchone() is None:
                 # Preserve XML metadata from an installed 0.2 collection on upgrade.
@@ -267,16 +268,57 @@ class LibraryInventory:
         return json.loads(row[0]) if row else {"source_name": "", "source_path": "", "refreshed_at": None,
                                              "entry_count": 0, "skipped": 0, "duplicate_locations": 0}
 
-    def _entries(self, music_root):
+    def _entries(self, music_root, limit=None):
+        """Merge saved inventory, optionally bounding work before metadata/file reads.
+
+        The bounded path selects unique stored locations first. XML metadata
+        remains stronger than scan metadata, and the limit never counts the
+        same location twice. A caller can request its cap plus one to detect
+        truncation without loading or checking the remaining files.
+        """
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int)
+                                  or not 1 <= limit <= MAX_ENTRIES + 1):
+            raise AppError("Choose a valid saved-inventory limit.")
         key = str(_roots(music_root)[1])
+        cache_key = (key, limit)
         with self._lock:
-            if self._cache and self._cache[0] == key and self._cache[1] > time.monotonic():
+            if self._cache and self._cache[0] == cache_key and self._cache[1] > time.monotonic():
                 return [dict(row) for row in self._cache[2]]
             with self.store.connect() as db:
-                xml_rows = [json.loads(row[0]) for row in db.execute("SELECT metadata FROM library_entries ORDER BY path")]
-                files = [dict(row) for row in db.execute("SELECT * FROM files WHERE root=? ORDER BY path", (key,))]
-                metadata_rows = {row["path"]: json.loads(row["metadata"]) for row in db.execute(
-                    "SELECT path,metadata FROM media_metadata WHERE root=?", (key,))}
+                if limit is None:
+                    xml_rows = [json.loads(row[0]) for row in db.execute("SELECT metadata FROM library_entries ORDER BY path")]
+                    files = [dict(row) for row in db.execute("SELECT * FROM files WHERE root=? ORDER BY path", (key,))]
+                    metadata_rows = {row["path"]: json.loads(row["metadata"]) for row in db.execute(
+                        "SELECT path,metadata FROM media_metadata WHERE root=?", (key,))}
+                else:
+                    # Both path streams are indexed. SQLite can merge them up
+                    # to LIMIT before joining/parsing metadata; no full Python
+                    # materialization, sort, or filesystem sweep precedes it.
+                    selected = db.execute("""WITH selected_paths AS (
+                        SELECT path FROM library_entries
+                        UNION
+                        SELECT path FROM files WHERE root=?
+                        ORDER BY path LIMIT ?)
+                        SELECT selected.path AS selected_path, xml.metadata AS xml_metadata,
+                               media.*, tags.metadata AS audio_metadata
+                        FROM selected_paths AS selected
+                        LEFT JOIN library_entries AS xml ON xml.path=selected.path
+                        LEFT JOIN files AS media ON media.path=selected.path AND media.root=?
+                        LEFT JOIN media_metadata AS tags
+                          ON tags.path=selected.path AND tags.root=? AND xml.path IS NULL
+                        ORDER BY selected.path""", (key, limit, key, key))
+                    xml_rows, files, metadata_rows = [], [], {}
+                    file_fields = ("path", "root", "size", "mtime", "title", "artist", "musical_key", "bpm", "cue_count", "origin")
+                    for row in selected:
+                        if row["xml_metadata"] is not None:
+                            entry = json.loads(row["xml_metadata"])
+                            if not isinstance(entry, dict) or entry.get("path") != row["selected_path"]:
+                                raise ValueError("The saved XML location does not match its inventory record.")
+                            xml_rows.append(entry)
+                        else:
+                            files.append({name: row[name] for name in file_fields})
+                            if row["audio_metadata"] is not None:
+                                metadata_rows[row["selected_path"]] = json.loads(row["audio_metadata"])
             entries = {row["path"]: row for row in xml_rows}
             for row in files:
                 if row["path"] in entries:
@@ -294,7 +336,7 @@ class LibraryInventory:
                 info = _path_info(row["path"], music_root)
                 result.append({**row, **{name: info[name] for name in ("available", "within_root", "unavailable_reason")}})
             result.sort(key=lambda row: (_normalise(row["artist"]), _normalise(row["title"]), row["path"]))
-            self._cache = (key, time.monotonic() + 10, result)
+            self._cache = (cache_key, time.monotonic() + 10, result)
             return [dict(row) for row in result]
 
     def import_xml(self, xml, music_root, source_name="Uploaded XML"):
@@ -344,7 +386,7 @@ class LibraryInventory:
         if len(items) > MAX_ENTRIES:
             raise AppError("This XML contains more than 50,000 tracks. Export a smaller collection.", 413)
         declared = collection.get("Entries")
-        if declared is not None and (not declared.isdigit() or int(declared) != len(items)):
+        if declared is not None and (len(declared) > 10 or not declared.isascii() or not declared.isdigit() or int(declared) != len(items)):
             raise AppError("The XML collection count does not match its contents. Export it again.")
         raw_root, root = _roots(music_root)
         entries, hydrated, skipped, duplicate_locations = {}, [], 0, 0
@@ -364,6 +406,7 @@ class LibraryInventory:
                      "key": _text(item.get("Tonality"), 128), "bpm": _bpm(item.get("AverageBpm")),
                      "genre": _text(item.get("Genre"), 200), "duration_ms": _duration(item.get("TotalTime"), seconds=True),
                      "cue_count": len(item.findall("POSITION_MARK")), "source": "rekordbox_xml",
+                     "xml_audio_fingerprint": info["fingerprint"] if info["available"] and info["within_root"] else None,
                      "identity_source": "rekordbox_xml" if _text(item.get("Name")) and _text(item.get("Artist")) else "filename"}
             entries[path] = entry
             if info["available"] and info["within_root"]:
