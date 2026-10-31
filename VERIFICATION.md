@@ -145,6 +145,13 @@ warns about that consistency limit.
 
 ## Remaining validation on the user’s Mac
 
+The first GitHub CI run exposed a macOS temporary-path alias in the new audio
+test and Python 3.9 being unavailable on the new `ubuntu-latest` image. The test
+now selects its canonical temporary directory, retaining the production path
+guard. The minimum-version Linux job is pinned to Ubuntu 22.04. Current CI
+results are available in the repository’s Checks workflow; fixture tests still
+do not verify the user’s SSD or a real CueGen launch.
+
 1. Restart with v0.7.0. Check Activity while refreshing, then test Spotify settings
    and one local audio preview with the SSD connected and disconnected.
 2. Use expendable audio copies to try one rename, Move to Removed and Undo.

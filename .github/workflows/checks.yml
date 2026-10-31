@@ -14,7 +14,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Keep the minimum-Python check on an image that ships its runtime.
+          - os: ubuntu-22.04
             python: '3.9'
           - os: macos-latest
             python: '3.12'

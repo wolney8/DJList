@@ -103,7 +103,9 @@ class RuntimeTests(unittest.TestCase):
 
     def test_local_audio_http_ranges_head_and_invalid_range(self):
         from library_inventory import _identity
-        music = self.root / "Music"
+        # macOS temporary paths can use /var as an alias for /private/var.
+        # The media guard deliberately requires the actual selected directory.
+        music = (self.root / "Music").resolve()
         music.mkdir()
         audio = music / "sample.mp3"
         audio.write_bytes(b"0123456789")
