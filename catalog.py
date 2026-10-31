@@ -228,7 +228,7 @@ def compare_offer(offer, reference):
 def fetch_catalogue(query):
     params = {"term": query, "country": STOREFRONT, "media": "music", "entity": "song", "limit": 40}
     request = Request(API_URL + "?" + urlencode(params),
-                      headers={"Accept": "application/json", "User-Agent": "DJList-local/0.4"})
+                      headers={"Accept": "application/json", "User-Agent": "DJList-local/0.5"})
     with OPENER.open(request, timeout=8) as response:
         body = response.read(MAX_RESPONSE_BYTES + 1)
     if len(body) > MAX_RESPONSE_BYTES:

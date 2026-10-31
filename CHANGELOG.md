@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.5.0 — 31 October 2026
+
+- Add native Mac **Browse** controls for the music folder, Rekordbox XML and
+  optional download inbox. Selections fill the Settings draft; **Save settings**
+  is still required. **Check setup** reports saved paths, XML freshness,
+  inventory and automatic-refresh status.
+- Add automatic library refresh, enabled by default while DJList is running.
+  Check selected paths every five seconds, wait for a stable XML export before
+  importing, and scan media at startup, after relevant settings changes and
+  on drive reconnection. Keep manual refresh controls. This does not generate
+  XML or continuously scan all nested music-folder changes.
+- Bundle unmodified, MIT-licensed TinyTag 2.3.2 with its licence and checksums;
+  no extra Python package installation is needed. Read existing embedded tags
+  and file duration locally without analyzing or changing audio. Cache results
+  by file identity and selected folder; retain filename fallback, including
+  raw AAC, and stronger existing Rekordbox XML metadata.
+- Label metadata provenance and read warnings. Preserve separate version notes
+  in matching so a hidden mix/subtitle does not become an unchecked match.
+  Cover supported metadata paths with synthetic fixtures; actual purchased
+  files and Mac external-drive behavior remain unverified.
+- Retry transient metadata read errors on refresh. Compare setup status with
+  the actual imported XML fingerprint, clear resolved watcher warnings after
+  manual refresh, and serialize file-link changes against folder changes.
+- Add a **Download inbox** for an explicitly selected folder, including one
+  outside the music root. Review suggested Spotify matches, select files and
+  confirm a batch of links in place. Nothing is preselected or moved, and
+  existing file links are never overwritten.
+- Expire inbox reviews after ten minutes and limit a preview to 500 files.
+  Recheck selected files, folder identity, tracks and links before an atomic
+  batch update. Confirmation records ownership and downloaded preparation
+  where appropriate, fills only empty BPM/key fields, and preserves personal
+  tags, notes and later preparation states.
+- Keep `master.db` access and all Rekordbox writes disabled. Document a future
+  version-specific read-only adapter and the separate compatibility, backup
+  and reviewed-batch requirements for any future writes.
+- Make the scrollable setup results keyboard focusable with a named region
+  and visible focus. Verify the new dialogs at narrow widths and in both themes.
+- Keep verification gaps explicit: real Mac native pickers, SSD permissions,
+  actual audio tags, live MusicBrainz lookup, audible previews and a full
+  accessibility audit still require the checks in [VERIFICATION.md](VERIFICATION.md).
+
 ## 0.4.0 — 31 October 2026
 
 - Replace the row Actions chooser with four direct icon buttons, labelled on

@@ -1,0 +1,15 @@
+{
+  "name": "tinytag",
+  "version": "2.3.2",
+  "upstream": "https://github.com/tinytag/tinytag",
+  "license": "MIT",
+  "download_url": "https://files.pythonhosted.org/packages/6b/54/d378858d14e5c5c7b921cb9ffccf27be3d34f3d6d010c57404ddd634685d/tinytag-2.3.2-py3-none-any.whl",
+  "archive_sha256": "ebaf957915266b9c20414a10f8c5170a345aa039a794650d39d66e7d6b96199f",
+  "retrieved": "2026-10-31",
+  "modifications": "None. Only the runtime package and upstream license are included.",
+  "files": {
+    "__init__.py": "b901456763a1da35824e25ffbebec3123e3e37539a58120dfd5fbd2c8ddb626b",
+    "tinytag.py": "f3ffb48ddc305cda53b574cde9c314c08defa6a7b9705fe655ba2d5f52bf27a8",
+    "LICENSE": "497f61aac3d877f48539dfc38d3c35215ba53648d0f9c4ac7fec467a0dc0cb4d"
+  }
+}

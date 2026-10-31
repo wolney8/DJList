@@ -48,6 +48,8 @@ def _fingerprint(info):
 def _root(value):
     try:
         raw = _absolute(str(Path(value).expanduser()), "your current music folder")
+        if raw == Path(raw.anchor):
+            raise AppError("Choose a specific music folder, rather than the filesystem root.", 409)
         if raw.is_symlink():
             raise AppError("Choose the actual music folder in Settings, rather than a folder symlink.", 409)
         root = raw.resolve(strict=True)

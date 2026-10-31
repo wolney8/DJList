@@ -15,27 +15,40 @@ from urllib.parse import urlencode
 def main():
     source = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(source))
+    sys.path.insert(0, str(source / "tests"))
     from app import Store
+    from test_audio_metadata import flac_bytes
     with tempfile.TemporaryDirectory(prefix="djlist-smoke-") as temporary:
         root = Path(temporary)
         music = root / "Music"
         music.mkdir()
         audio = music / "Example Artist - Night Window (Original Mix).flac"
-        audio.write_bytes(b"fictional scan fixture; not playable audio")
+        audio.write_bytes(flac_bytes(title="Night Window (Original Mix)"))
+        downloads = root / "Downloads"
+        downloads.mkdir()
+        purchase = downloads / "new-purchase.flac"
+        purchase.write_bytes(flac_bytes(title="New Purchase (Extended Mix)"))
+        original_bytes, purchased_bytes = audio.read_bytes(), purchase.read_bytes()
         xml_path = root / "library.xml"
         xml_path.write_text('<DJ_PLAYLISTS><COLLECTION Entries="1"><TRACK Name="Night Window (Original Mix)" Artist="Example Artist" '
                             'AverageBpm="172" Tonality="C minor" Genre="Jungle" TotalTime="193" Location="%s"/>'
                             '</COLLECTION></DJ_PLAYLISTS>' % audio.as_uri(), encoding="utf-8")
         store = Store(root / "data")
-        store.put_settings({"music_root": str(music), "rekordbox_xml": str(xml_path), "auto_store_lookup": False})
+        store.put_settings({"music_root": str(music), "rekordbox_xml": str(xml_path), "auto_store_lookup": False,
+                            "download_root": str(downloads), "auto_library_refresh": False})
         store.upsert([{"spotify_id": "fixture-track", "artists": "Example Artist", "title_and_version": "Night Window (Original Mix)",
-                       "duration_ms": 193000, "album": "Fictional test release", "spotify_url": "", "isrc": "GBABC2600001"}], "fixture-source")
+                       "duration_ms": 193000, "album": "Fictional test release", "spotify_url": "", "isrc": "GBABC2600001"},
+                      {"spotify_id": "fixture-purchase", "artists": "Example Artist", "title_and_version": "New Purchase (Extended Mix)",
+                       "duration_ms": 193000, "album": "Fictional test release", "spotify_url": ""}], "fixture-source")
         real_id = store.rows("real")[0]["id"]
+        purchase_id = store.rows("real")[1]["id"]
         store.patch(real_id, "real", {"notes": "Keep my notes", "tags": "my tag", "purchase_url": "https://example.test/manual-choice"})
+        store.patch(purchase_id, "real", {"notes": "Keep inbox notes", "tags": "my inbox tag", "bpm": "170"})
         app = root / "app"
         app.mkdir()
-        for name in ("app.py", "spotify_api.py", "catalog.py", "library_inventory.py", "enrichment.py", "relocation.py", "musicbrainz.py"):
-            shutil.copy2(source / name, app / name)
+        for module in source.glob("*.py"):
+            shutil.copy2(module, app / module.name)
+        shutil.copytree(source / "vendor", app / "vendor", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         shutil.copytree(source / "web", app / "web")
         # Keep stalled startup diagnostics in the temporary test process only.
         runner = app / "smoke_runner.py"
@@ -98,7 +111,7 @@ def main():
                     time.sleep(.05)
             assert status == 200, (status, body)
             health = json.loads(body)
-            assert health["app"] == "DJList" and health["api_version"] == 4
+            assert health["app"] == "DJList" and health["api_version"] == 5
             assert health["static_snapshot"] and health["build_id"]
             status, body = request("/api/state")
             assert status == 200
@@ -124,6 +137,28 @@ def main():
             inventory = json.loads(body)
             assert status == 200 and inventory["total"] == 1
             assert inventory["entries"][0]["bpm"] == "172"
+            assert libraries["media"]["metadata_read"] == 1
+            status, body = request("/api/setup-check")
+            setup = json.loads(body)
+            assert status == 200 and all(row["status"] == "ok" for row in setup["checks"]), (status, body)
+            assert not json.loads(request("/api/library-watch")[1])["enabled"]
+            assert request("/api/browse", "POST", {"kind": "music"})[0] == 403
+            assert request("/api/inbox-preview", "POST", {})[0] == 403
+            status, body = request("/api/inbox-preview", "POST", {}, token)
+            inbox = json.loads(body)
+            assert status == 200 and inbox["total"] == 1, (status, body)
+            incoming = inbox["entries"][0]
+            assert incoming["title"] == "New Purchase (Extended Mix)" and incoming["bpm"] == "172"
+            assert incoming["candidates"][0]["track_id"] == purchase_id
+            status, body = request("/api/inbox-apply", "POST", {"token": inbox["token"],
+                                   "selections": [{"entry_id": incoming["id"], "track_id": purchase_id}]}, token)
+            assert status == 200 and json.loads(body)["updated"] == 1, (status, body)
+            saved_purchase = next(row for row in json.loads(request("/api/state")[1])["tracks"] if row["id"] == purchase_id)
+            assert (saved_purchase["owned"], saved_purchase["prep_status"], saved_purchase["bpm"], saved_purchase["musical_key"]) == \
+                (True, "downloaded", "170", "C minor")
+            assert (saved_purchase["notes"], saved_purchase["tags"], saved_purchase["local_file"]) == \
+                ("Keep inbox notes", "my inbox tag", str(purchase))
+            assert audio.read_bytes() == original_bytes and purchase.read_bytes() == purchased_bytes
             refresh_path = "/api/tracks/%s/refresh-store" % real_id
             assert request(refresh_path, "POST", {})[0] == 403
             status, body = request(refresh_path, "POST", {}, token)
@@ -175,7 +210,7 @@ def main():
             assert collision.returncode != 0
             output = collision.stdout + collision.stderr
             assert "DJList" in output and "Control+C" in output, output
-            print("PASS: real HTTP edits, XML/offline inventory, simulated shop discovery, reviewed moved-file relinking, manual-field preservation, asset snapshot and occupied-port guidance")
+            print("PASS: real HTTP edits, setup checks, embedded metadata, reviewed inbox links, XML/offline inventory, simulated shop discovery, moved-file relinking, manual-field preservation, asset snapshot and occupied-port guidance")
         except Exception:
             if process.poll() is None:
                 process.terminate()

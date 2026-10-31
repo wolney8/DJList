@@ -324,3 +324,47 @@ dialog{color:var(--text);background:var(--surface);border:1px solid var(--line);
 .more-shop-source{display:inline-flex;align-items:center;gap:6px;min-height:44px;color:var(--primary);font-size:12px;text-underline-offset:3px}
 .more-shop-source svg{width:14px;height:14px}
 .catalog-version-note{font-size:13px;line-height:1.6;color:var(--primary);margin:8px 0;overflow-wrap:anywhere}
+
+/* Library setup and incoming-file review share the existing dialog patterns. */
+.source-tools{grid-template-columns:minmax(0,1fr)}
+.source-tools-actions{justify-content:flex-start}
+.source-tools .library-watch-status{grid-column:1/-1;margin:0;color:var(--subtle)}
+.source-tools .library-watch-status.is-warning{color:var(--danger)}
+.path-picker{display:flex;align-items:stretch;gap:8px}
+.path-picker input{flex:1;min-width:0}
+.path-picker .button{flex-shrink:0}
+.optional-label{font-weight:400;color:var(--subtle);margin-left:6px}
+.advanced-folder-settings{border-top:1px solid var(--line);margin-top:20px;padding-top:8px}
+.advanced-folder-settings summary{min-height:44px;padding:12px 0;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
+.setup-dialog,.inbox-dialog{width:min(820px,calc(100vw - 32px))}
+.setup-results{display:grid;gap:12px;margin-top:16px}
+#setup-form>.dialog-content:focus-visible{outline:3px solid var(--focus);outline-offset:-3px}
+.setup-check{border:1px solid var(--line);border-radius:14px;background:var(--bg);padding:16px;min-width:0}
+.setup-check-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.setup-check h3,.setup-library-summary h3,.inbox-empty h3{font-size:15px;line-height:1.5;margin:0;font-weight:650}
+.setup-check-state{font-size:12px;color:var(--danger);font-weight:600}
+.setup-check-state.is-ok{color:var(--success)}
+.setup-check-state.is-neutral{color:var(--subtle)}
+.setup-check-path{overflow-wrap:anywhere;font-size:12px;color:var(--muted);margin:10px 0;padding:10px 12px;border-radius:8px;background:var(--surface-2)}
+.setup-check .field-help{margin-bottom:0}
+.setup-library-summary{margin-top:20px;border-top:1px solid var(--line);padding-top:18px}
+.setup-library-summary>p{font-size:13px;color:var(--muted);line-height:1.7}
+.setup-footer{flex-wrap:wrap}
+.setup-footer .button-quiet{margin-right:auto}
+.inbox-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:end;margin-top:12px}
+.inbox-tools .field-label{margin-top:0}
+.inbox-selection{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin:14px 0;color:var(--muted);font-size:13px}
+.inbox-entry{padding:17px;border:1px solid var(--line);border-radius:14px;background:var(--bg);margin:12px 0;min-width:0;overflow-wrap:anywhere}
+.inbox-entry h3{font-size:15px;line-height:1.5;margin:0 0 4px}
+.inbox-entry .inbox-file-artist{font-size:13px;color:var(--muted);margin:0 0 8px}
+.inbox-entry .inbox-file-facts{font-size:12px;color:var(--subtle);margin:6px 0;line-height:1.7}
+.inbox-entry .field-label{margin-top:16px}
+.inbox-entry select{max-width:100%;font-size:13px}
+.inbox-candidate-reasons{font-size:13px;color:var(--muted);line-height:1.7;margin:10px 0}
+.inbox-choice{display:flex;gap:11px;align-items:flex-start;min-height:44px;padding:10px 0 0;cursor:pointer;font-size:13px;color:var(--text)}
+.inbox-choice input{flex-shrink:0;width:20px;height:20px;accent-color:var(--primary);margin:1px 0 0}
+.inbox-empty{padding:24px 18px;border:1px dashed var(--outline);border-radius:14px;margin:18px 0;text-align:center}
+.inbox-empty .button{margin-top:8px}
+.inbox-meta-warning{font-size:12px;color:var(--danger);line-height:1.7}
+.metadata-provenance{font-size:12px;color:var(--subtle);line-height:1.6;margin:8px 0}
+@media(max-width:650px){.inbox-tools{grid-template-columns:minmax(0,1fr)}.inbox-tools .button{justify-self:start}.setup-footer .button-quiet{margin-right:0}.setup-footer{justify-content:flex-start}.inbox-entry,.setup-check{padding:14px}.path-picker{flex-wrap:wrap}.path-picker input{flex-basis:100%}.path-picker .button{font-size:13px}}

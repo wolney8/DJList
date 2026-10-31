@@ -24,7 +24,12 @@ Rekordbox library, annotations and audio files.
 - Default historical paths are configuration suggestions, not proof of current state.
 - Missing external storage must never trigger a fallback to another Rekordbox database.
 - Scanning and matching must not rename, move, delete or modify audio files.
-- No CueGen execution or Rekordbox database writes in this initial build.
+- Read embedded audio metadata only within explicitly selected music or
+  download folders. Keep bounded reads, file-identity checks and source labels;
+  unknown BPM/key must remain unknown rather than being inferred as analysis.
+- No CueGen execution, direct master.db access or Rekordbox database writes in
+  the current build. A future read-only adapter needs version compatibility,
+  connection-level write prevention and a consistent view of the active database.
 - Enable future cue writes only after version compatibility, a library backup and
   explicit selection of a small new batch have been verified on the user's Mac.
 
@@ -41,6 +46,16 @@ Rekordbox library, annotations and audio files.
 - Retain imported XML records when their drive is offline. A refresh reads the
   selected export; it must not imply that DJList exported Rekordbox itself.
 - Distinguish XML identity from filename guesses when ranking possible copies.
+- Retain separate version/mix notes from audio tags when matching files. Read
+  errors stay visible and must be retried on refresh, not cached indefinitely.
+- Native browsing fills the Settings draft only. Check setup uses saved paths.
+  Watch only configured local paths, retain the previous inventory on failure,
+  and preserve editing drafts when automatic status changes arrive.
+- Download-inbox linking requires explicit file/track selection and a fresh
+  review token. Revalidate the whole batch and update atomically; never replace
+  existing links or overwrite saved annotations. Serialize new/changed/cleared
+  file links against settings and other library actions while keeping ordinary
+  annotation edits available.
 - Relinking moved files requires a fresh preview and explicit track selection.
   Change only those DJList file paths, preserving ownership and every other
   annotation. Recheck file/root identity and reject stale batches atomically.

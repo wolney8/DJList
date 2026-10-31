@@ -22,7 +22,7 @@ from spotify_api import AppError
 
 
 API_ROOT = "https://musicbrainz.org/ws/2/isrc/"
-USER_AGENT = "DJList/0.4.0 (+https://github.com/wolney8/DJList)"
+USER_AGENT = "DJList/0.5.0 (+https://github.com/wolney8/DJList)"
 SUPPORTED_PROVIDERS = ("Bandcamp", "Beatport")
 NOTICE = ("Bandcamp and Beatport track links listed by MusicBrainz contributors. "
           "Shop availability, price, BPM and key have not been checked. Confirm the exact mix before buying.")

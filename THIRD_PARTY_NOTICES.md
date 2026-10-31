@@ -1,5 +1,36 @@
 # Third-party notices
 
+## TinyTag audio metadata reader
+
+DJList 0.5.0 bundles the unmodified runtime package from **TinyTag 2.3.2**,
+released 7 September 2026. TinyTag is licensed under the **MIT licence**. The
+original copyright and permission notice are retained in
+[`vendor/tinytag/LICENSE`](vendor/tinytag/LICENSE); distribution of this bundled
+code must retain that notice. This dependency does not change DJList's licence.
+
+Official project and release sources:
+
+- [TinyTag on PyPI](https://pypi.org/project/tinytag/2.3.2/)
+- [TinyTag upstream repository](https://github.com/tinytag/tinytag)
+- [Official 2.3.2 wheel](https://files.pythonhosted.org/packages/6b/54/d378858d14e5c5c7b921cb9ffccf27be3d34f3d6d010c57404ddd634685d/tinytag-2.3.2-py3-none-any.whl)
+
+Retrieved **31 October 2026**. SHA-256 of the original wheel:
+
+`ebaf957915266b9c20414a10f8c5170a345aa039a794650d39d66e7d6b96199f`
+
+Only `__init__.py`, `tinytag.py` and the upstream licence are included from that
+release. [`vendor/tinytag/PROVENANCE.json`](vendor/tinytag/PROVENANCE.json) records
+the source archive, retrieval date and individual file checksums. No separate
+package installation or network download is required when the user starts
+DJList. The bounds, path checks, caching and field selection in
+`audio_metadata.py` are DJList's wrapper around the unmodified reader.
+
+This integration reads supported embedded tags and file-header duration
+locally. Image extraction is disabled. It does not analyze audio to generate
+BPM/key, modify audio, or copy the full recording. Selected metadata and file
+fingerprints are cached in DJList's own local database. The reader's software
+licence does not grant any rights to recordings, artwork or third-party tags.
+
 ## iTunes Store badge
 
 `web/assets/download-on-itunes.svg` is Apple's approved **Get it on iTunes

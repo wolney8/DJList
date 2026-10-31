@@ -3,7 +3,7 @@
 **A local Spotify wishlist and DJ music tracker.** Find purchase candidates,
 listen to permitted store previews, record ownership and link your audio files.
 
-Version **0.4.0**. Development build; see [VERIFICATION.md](VERIFICATION.md) for
+Version **0.5.0 — 31 October 2026**. Development build; see [VERIFICATION.md](VERIFICATION.md) for
 the checks performed and [ROADMAP.md](ROADMAP.md) for outstanding work and access
 requirements.
 
@@ -14,9 +14,9 @@ requirements.
 3. Choose **Explore the demo**, or open Settings to connect your Spotify app.
 
 Keep the Terminal window running while using DJList. Press **Control+C** there
-to stop it. Python 3.9 or later is required; no additional Python packages are
-needed. The launcher checks common Python locations. Node is only needed for
-developer checks.
+to stop it. Python 3.9 or later is required; no additional Python packages need
+to be installed. The audio-tag reader is included with DJList. The launcher
+checks common Python locations. Node is only needed for developer checks.
 
 This launcher is unsigned and unnotarised. macOS may require **System Settings →
 Privacy & Security → Open Anyway** for this specific file. Follow
@@ -161,15 +161,53 @@ iTunes match can show a labelled genre suggestion; adding it to your own tags
 still requires your selection and **Save changes**. The iTunes catalogue used
 here does not supply BPM or musical key.
 
-Import a **Rekordbox XML inventory** to use existing analyzed key/BPM values
-when confirming a file match, or enter them manually. DJList does not analyze
-audio or claim that a key came from Spotify.
+Import a **Rekordbox XML inventory** to use existing analyzed key/BPM values,
+or read values already embedded in your purchased audio files. Confirming a
+file link can fill empty key/BPM fields from those sources; it preserves values
+you have already saved. You can also enter them manually. DJList does not
+analyze audio or claim that a key came from Spotify.
+
+## Set up and check your folders
+
+1. In **Settings**, use **Browse** beside **Music folder** and **Rekordbox XML
+   file**. On a Mac this opens its native folder or file chooser. You can still
+   paste a full path. Export an XML from Rekordbox first if you do not have one.
+2. Optionally choose a **Download inbox folder** for purchased audio. It may
+   be inside your music folder or a separate folder, including on an SSD.
+   Choose **Save settings** to keep your choices; browsing only fills the draft.
+3. Choose **Check setup** to review the saved paths, current XML freshness,
+   inventory counts and automatic-refresh status. Unsaved Settings drafts are
+   not checked. A readable XML file still needs to be imported with
+   **Refresh XML** before it supplies your library inventory.
+
+Export future Rekordbox XML snapshots to the same selected file. **Check setup**
+can identify a changed or older export; it cannot establish whether that export
+contains every change currently in Rekordbox. The real Mac chooser, filesystem
+permissions and SSD connection still need checking on your computer.
+
+## Automatic library refresh
+
+**Refresh library automatically** is on by default. While DJList is running,
+it checks the selected music folder's availability and the selected XML file
+every **five seconds**. A changed XML must remain unchanged for at least five
+seconds before DJList attempts to import it. A media scan runs at startup,
+after relevant saved-setting changes and when the selected music drive
+reconnects. Work waits if another library operation is in progress.
+
+This does not export XML from Rekordbox. Export a fresh snapshot when its
+collection changes. It also does not continuously scan every nested music
+folder for new files: use **Refresh media** after adding or changing files on
+an already connected drive. Use **Scan inbox** to review newly downloaded
+audio. Automatic refresh preserves open editing drafts and existing annotations.
+When the drive or XML is unavailable, DJList retains its previous inventory.
+Turn the setting off to use the manual refresh controls alone.
 
 ## Refresh and review your existing library
 
-- **Refresh media** reads filenames and file information in your configured
-  music folder. It reports partial scans and keeps previous inventory entries
-  when some files or folders cannot be read.
+- **Refresh media** reads filenames, file information and supported embedded
+  audio tags in your configured music folder. Unchanged tag results are cached.
+  It reports partial scans and keeps previous inventory entries when some files
+  or folders cannot be read.
 - **Refresh XML** rereads the **Rekordbox XML file** path saved in Settings.
   Export a fresh XML from Rekordbox to that same file when its collection changes.
   This button does not read the live Rekordbox database or create a new export.
@@ -183,11 +221,62 @@ usable export contains skipped entries, DJList shows a warning to review it.
 Existing XML metadata from a v0.2 collection is retained on upgrade.
 
 Duplicate suggestions compare artist, full title/version and duration where
-available. Filename matches are labelled as less certain. They are prompts to
-check the files, not proof of identical audio. Nothing is automatically linked,
-deleted or marked owned by a scan or XML refresh. Choose **Select this file**
-and **Save changes** to confirm a link; this records ownership and can fill
-empty key/BPM fields from the XML. You can also tick ownership manually.
+available. The source is labelled as **Rekordbox XML**, **Audio file tags** or
+**Filename**. Filename matches and separate version notes require particular
+care; they are suggestions, not proof of identical audio. Nothing is
+automatically linked, deleted or marked owned by a scan or XML refresh. Choose
+**Select this file** and **Save changes** to confirm a link; this records
+ownership and can fill empty key/BPM fields from XML or embedded tags. You can
+also tick ownership manually.
+
+### Embedded audio metadata
+
+DJList includes the MIT-licensed **TinyTag 2.3.2** reader. It reads supported
+title, artist, album, genre, duration, ISRC, version notes and existing BPM/key
+tags. It does not calculate BPM or key, extract artwork or alter the audio.
+Absent fields stay unknown. Existing Rekordbox XML metadata takes precedence
+over audio tags for the same library file; a filename remains the fallback
+when useful tags cannot be read.
+
+Metadata reads are local and bounded. Symlinks and paths outside the selected
+folder are rejected. A file that changes during a read is not accepted as a
+stable metadata result. Cached results are tied to the selected folder, file
+identity and reader version, and are refreshed when the file changes. An
+unreadable or unsupported tag does not remove the file from the filename
+inventory. Offline inventory keeps its earlier metadata with an availability
+warning.
+
+Synthetic-file tests cover **MP3, FLAC, WAV, AIFF, M4A and Ogg/Opus** metadata.
+They do not establish compatibility with every encoding or tag layout in those
+formats. Raw **AAC** currently uses filename fallback. Real purchased files
+and external-drive reads remain to be checked on the user's Mac. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the bundled reader's licence
+and provenance.
+
+## Review purchased files in the download inbox
+
+Choose **Download inbox → Scan inbox** after saving its folder in Settings.
+DJList reads that folder and suggests matches to your Spotify tracks using
+embedded tags where available, with filename fallback. Review the exact mix,
+artist and version notes, choose the correct track for each file and tick the
+matches you have checked. Nothing is selected by default. Then choose
+**Confirm selected links**.
+
+Confirmation links each chosen file **where it already is** and marks the
+track owned. A track in **Wishlist** or **Bought** moves to **Downloaded**;
+later preparation states are preserved. Empty BPM/key fields can be filled
+from the file's existing tags. Saved BPM/key, tags and notes are preserved;
+genre is not automatically added to your personal tags. The inbox does not
+replace an existing file link, move downloads into your music folder, check
+receipts or import anything into Rekordbox.
+
+Each review holds up to **500 files** and expires after **10 minutes**. Files,
+folders and saved links are checked again at confirmation; a changed selection
+requires a fresh scan instead of applying part of the batch. Use a focused
+inbox folder and check any limit or skipped-file warning. If you plan to move
+purchased files onto your SSD, put them in their intended location before
+confirming their links. Moving them later requires reviewing the saved paths
+again.
 
 ## Find files after moving a folder or renaming an SSD
 
@@ -218,9 +307,10 @@ installations suggest `~/Music/DJ Music`. Existing settings are preserved. The
 optional Rekordbox database path is configuration only; DJList does not open or
 modify the live database.
 
-Scanning reads filenames and file information. Suggestions need confirmation.
-It never moves, renames, deletes or edits audio. Ownership is separate from
-file availability, so a disconnected drive does not clear ticks or saved paths.
+Scanning reads filenames, file information and supported embedded metadata.
+Suggestions need confirmation. It never moves, renames, deletes or edits audio.
+Ownership is separate from file availability, so a disconnected drive does not
+clear ticks or saved paths.
 
 If you move folders or rename the SSD, update the music folder in Settings and
 use **Find moved files** to review compatible saved links. Export a fresh
@@ -237,6 +327,26 @@ Include that folder in your backups. Updating the application folder does not
 move those records. CSV export is a readable record copy, not a full database
 backup. Demo records stay separate from the real collection.
 
+## Rekordbox database access
+
+DJList **does not open or edit `master.db` in 0.5.0**. The optional database path
+under advanced Settings is a setup note only. XML is the current source of
+Rekordbox collection data, including its existing analyzed BPM/key values.
+
+A read-only database adapter is feasible future work. It must support the
+specific Rekordbox version, its SQLCipher encryption and schema, and a
+consistent view of a database that Rekordbox may be changing. The unofficial
+[pyrekordbox documentation](https://pyrekordbox.readthedocs.io/en/stable/quickstart.html)
+describes encrypted database access; SQLite documents the
+[live WAL and read-only requirements](https://www.sqlite.org/wal.html).
+Pointing a normal SQLite reader at the live file is not enough. A disconnected
+SSD must not silently select a different database.
+
+Writing tracks, tags or cues back needs a separate, controlled design. It is
+deferred until version compatibility, a restorable library backup, a closed
+Rekordbox session and an explicitly reviewed small batch can be checked on the
+user's Mac. No direct writes or CueGen execution are enabled in this build.
+
 ## Privacy and operation
 
 The server listens only on `127.0.0.1:8888`. Vercel is not used. Spotify requests
@@ -246,6 +356,11 @@ a click. Spotify artwork loads from Spotify's image service. External shop/Googl
 links send the query when opened. **Find more shop links** sends the selected
 track's ISRC to MusicBrainz; title, artist and duration comparisons happen locally.
 The app does not upload your music library or audio files.
+
+Embedded tags and file fingerprints are read locally and retained in DJList's
+own database for inventory and matching. The included reader makes no network
+requests and does not save a copy of the audio. Native Browse controls open a
+chooser on the computer running DJList when you request one.
 
 The public repository contains source, tests and documentation. Keep personal
 Client IDs, settings, playlists, databases, tokens, logs and music outside Git.
@@ -267,6 +382,9 @@ or a store. A sandbox blocking loopback binding is not a passing test.
 
 GitHub Actions runs checks on Linux and macOS. Follow [AGENTS.md](AGENTS.md).
 Apple badge assets retain Apple's rights; see their adjacent attribution file.
+The bundled TinyTag runtime and its original MIT licence are under
+`vendor/tinytag/`; [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) records its
+source and checksums. No separate package installation is needed to launch.
 
 ## Further work
 
@@ -287,3 +405,5 @@ not implemented. Preparation statuses record your own progress.
 - [MusicBrainz request limits](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting)
 - [MusicBrainz recording/version conventions](https://musicbrainz.org/doc/Style/Recording)
 - [Rekordbox XML format](https://cdn.rekordbox.com/files/20200410160904/xml_format_list.pdf)
+- [TinyTag package and supported metadata](https://pypi.org/project/tinytag/)
+- [TinyTag upstream source](https://github.com/tinytag/tinytag)

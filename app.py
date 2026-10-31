@@ -4,8 +4,9 @@
 Run: python3 app.py
 Test data location: python3 app.py --data-dir /tmp/djlist-test --no-browser
 The app binds to 127.0.0.1 only. Spotify credentials stay in memory for this run.
-The selected music folder is scanned read-only. Rekordbox's database is never
-opened or changed. Cue generation and audio-file moves are not implemented.
+Selected music/download folders and embedded tags are read-only. The metadata
+reader is bundled. Rekordbox's database is never opened or changed. Cue
+generation and audio-file moves are not implemented.
 """
 import argparse
 from contextlib import contextmanager
@@ -24,6 +25,7 @@ import re
 import secrets
 from socketserver import TCPServer
 import sqlite3
+import stat
 import sys
 import threading
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
@@ -35,13 +37,20 @@ from enrichment import StoreLookupQueue
 from library_inventory import LibraryInventory
 from relocation import BATCH_LIMIT as RELOCATION_LIMIT, RelocationPlanner
 from musicbrainz import MusicBrainzClient
+from audio_metadata import file_fingerprint, read_audio_metadata
+from download_inbox import DownloadInbox
+from library_watch import LibraryWatcher, configuration as watch_configuration
+from native_picker import NativePicker
+from setup_checks import check_setup
+from relocation import _root as file_root, _snapshot as file_snapshot
 
-VERSION = "0.4.0"
-API_VERSION = 4
+VERSION = "0.5.0"
+API_VERSION = 5
 DEFAULTS = {
     "spotify_client_id": "",
     "playlist_url": "", "music_root": "~/Music/DJ Music",
     "rekordbox_db": "", "rekordbox_xml": "", "auto_store_lookup": True,
+    "download_root": "", "auto_library_refresh": True,
 }
 MANUAL = {"owned": False, "tags": "", "musical_key": "", "bpm": "", "energy": "",
           "purchase_url": "", "local_file": "", "cue_notes": "", "notes": "", "prep_status": "wishlist"}
@@ -256,8 +265,10 @@ class Store:
                 changes.setdefault("owned", True)
                 imported = inventory is not None and inventory["origin"] == "rekordbox_xml"
                 if changes["local_file"] != current["local_file"]:
-                    changes.setdefault("prep_status", "imported" if imported else "downloaded")
-                if imported:
+                    stages = ["wishlist", "bought", "downloaded", "imported", "reviewed"]
+                    inferred = "imported" if imported else "downloaded"
+                    changes.setdefault("prep_status", current["prep_status"] if stages.index(current["prep_status"]) >= stages.index(inferred) else inferred)
+                if inventory is not None and inventory["origin"] in {"rekordbox_xml", "audio_tags"}:
                     for key in ("musical_key", "bpm"):
                         if not current[key]:
                             changes.setdefault(key, inventory[key])
@@ -299,6 +310,7 @@ class Application:
         self.last_auth_error = ""
         self.auth_lock = threading.RLock()
         self.work_lock = threading.RLock()
+        self._closing = False
         self.catalog = CatalogClient()
         self.musicbrainz = MusicBrainzClient()
         self.app_dir = Path(__file__).resolve().parent
@@ -307,11 +319,65 @@ class Application:
         self.started_at = now()
         self.library = LibraryInventory(self.store)
         self.relocation = RelocationPlanner(self.store)
+        self.inbox = DownloadInbox(self.store, self.library)
+        self.picker = NativePicker()
+        self.library_watcher = LibraryWatcher(self.store.settings, self._automatic_library_refresh, self.library.invalidate)
         self.lookup = StoreLookupQueue(self.store, lambda query, reference, force=False: self.catalog.search(query, reference, force=force))
 
     def close(self):
+        self._closing = True
+        self.library_watcher.close()
         self.lookup.close()
         self.relocation.clear()
+        self.inbox.clear()
+
+    def start_watchers(self):
+        self.library_watcher.start()
+
+    def library_watch_status(self):
+        settings = self.store.settings()
+        return {**self.library_watcher.status(), "enabled": settings["mode"] == "real" and settings["auto_library_refresh"]}
+
+    def _automatic_library_refresh(self, expected, media, xml):
+        if self._closing or not self.work_lock.acquire(blocking=False):
+            return {"deferred": True}
+        try:
+            settings = self.store.settings()
+            if watch_configuration(settings) != expected or settings["mode"] != "real" or not settings["auto_library_refresh"]:
+                return {"deferred": True}
+            return self.refresh_libraries(media=media, xml=xml)
+        finally:
+            self.work_lock.release()
+
+    def browse(self, kind):
+        if self.namespace() != "real":
+            raise AppError("Leave the demo before choosing real library folders.", 409)
+        return self.picker.choose(kind)
+
+    def setup_check(self):
+        if self.namespace() != "real":
+            raise AppError("Leave the demo before checking your real folders.", 409)
+        self.library.invalidate()
+        return check_setup(self.store.settings(), self.library, self.library_watch_status())
+
+    def inbox_preview(self):
+        if not self.work_lock.acquire(blocking=False):
+            raise AppError("Another library action is running. Try the inbox again shortly.", 409)
+        try:
+            return self.inbox.preview()
+        finally:
+            self.work_lock.release()
+
+    def inbox_apply(self, token, selections):
+        if not self.work_lock.acquire(blocking=False):
+            raise AppError("Another library action is running. Try confirming the inbox links again shortly.", 409)
+        try:
+            result = self.inbox.apply(token, selections)
+            self.library.invalidate()
+            self.library_watcher.changed()
+            return result
+        finally:
+            self.work_lock.release()
 
     def runtime(self):
         return {"version": VERSION, "api_version": API_VERSION, "build_id": self.build_id,
@@ -353,6 +419,7 @@ class Application:
                 "drive": {"available": root.is_dir(), "music_root": str(root),
                           "rekordbox_db_exists": bool(settings["rekordbox_db"] and Path(settings["rekordbox_db"]).expanduser().is_file())},
                 "library": library, "suggestions": suggestions,
+                "library_watch": self.library_watch_status(),
                 "relocation": {"previous_music_root": settings.get("previous_music_root", "") if namespace == "real" else "",
                                "limit": RELOCATION_LIMIT},
                 "store_job": self.lookup.status() if namespace == "real" else StoreLookupQueue._idle(),
@@ -364,6 +431,8 @@ class Application:
                                  "shop_links": True,
                                  "automatic_store_lookup": True, "library_review": True, "library_refresh": True,
                                  "file_relink": True,
+                                 "native_picker": self.picker.supported, "setup_check": True,
+                                 "library_watch": True, "file_metadata": True, "download_inbox": True,
                                  "preview_audio": "assets/download-on-itunes.svg" in self.assets,
                                  "cue_generation": False, "rekordbox_xml_export": False, "file_moves": False}}
 
@@ -380,12 +449,12 @@ class Application:
             raise AppError("Only the displayed settings can be changed.")
         clean = {}
         for key, value in updates.items():
-            if key == "auto_store_lookup":
+            if key in {"auto_store_lookup", "auto_library_refresh"}:
                 if not isinstance(value, bool):
-                    raise AppError("Automatic store lookup must be checked or unchecked.")
+                    raise AppError("Automatic refresh options must be checked or unchecked.")
                 clean[key] = value
                 continue
-            if not isinstance(value, str) or len(value) > 4096 or "\x00" in value:
+            if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 or ord(c) == 127 for c in value):
                 raise AppError("A setting contains an invalid value.")
             clean[key] = value.strip()
         if clean.get("spotify_client_id") and not re.fullmatch(r"[A-Fa-f0-9]{32}", clean["spotify_client_id"]):
@@ -396,13 +465,15 @@ class Application:
             if old["source_id"] and source != old["source_id"]:
                 raise AppError("This collection is linked to another playlist. Keep its original playlist link.", 409)
             clean["playlist_url"] = url
-        for key in ("music_root", "rekordbox_db", "rekordbox_xml"):
+        for key in ("music_root", "rekordbox_db", "rekordbox_xml", "download_root"):
             if key in clean:
-                if key in ("rekordbox_db", "rekordbox_xml") and not clean[key]:
+                if key in ("rekordbox_db", "rekordbox_xml", "download_root") and not clean[key]:
                     continue
                 if not clean[key] or not Path(clean[key]).expanduser().is_absolute():
                     raise AppError("Use an absolute folder/file path for " + key.replace("_", " ") + ".")
                 clean[key] = str(Path(clean[key]).expanduser())
+                if key in {"music_root", "download_root"} and (Path(clean[key]) == Path(Path(clean[key]).anchor) or ".." in Path(clean[key]).parts):
+                    raise AppError("Choose a specific music or download folder, without '..' or the filesystem root.")
                 if key == "rekordbox_xml" and Path(clean[key]).suffix.lower() != ".xml":
                     raise AppError("Choose the path to a Rekordbox .xml export.")
         root_changed = clean.get("music_root", old["music_root"]) != old["music_root"]
@@ -418,6 +489,9 @@ class Application:
         if root_changed:
             self.library.invalidate()
             self.relocation.clear()
+        if root_changed or clean.get("download_root", old["download_root"]) != old["download_root"]:
+            self.inbox.clear()
+        self.library_watcher.changed()
         if clean.get("auto_store_lookup") is False:
             self.lookup.cancel()
         if clean.get("spotify_client_id", old["spotify_client_id"]) != old["spotify_client_id"]:
@@ -486,11 +560,20 @@ class Application:
             self.work_lock.release()
 
     def demo(self, enabled):
+        if not self.work_lock.acquire(blocking=False):
+            raise AppError("A library action is running. Wait before changing collections.", 409)
+        try:
+            return self._demo(enabled)
+        finally:
+            self.work_lock.release()
+
+    def _demo(self, enabled):
         if not isinstance(enabled, bool):
             raise AppError("Choose whether to enter or leave the demo.")
         if enabled:
             self.lookup.cancel()
             self.relocation.clear()
+            self.inbox.clear()
         if enabled and not self.store.rows("demo"):
             examples = [
                 ("Night Window", "Example Artist", "Original Mix"),
@@ -506,33 +589,77 @@ class Application:
             self.store.patch(rows[1]["id"], "demo", {"owned": True, "tags": "future garage; warm-up", "musical_key": "C minor", "bpm": "132", "prep_status": "bought"})
             self.store.patch(rows[3]["id"], "demo", {"tags": "jungle; melancholic", "energy": "3", "notes": "Fictional example. Your real collection stays separate."})
         self.store.put_settings({"mode": "demo" if enabled else "real"})
+        self.library_watcher.changed()
         return {"mode": "demo" if enabled else "real"}
 
-    def checked_file(self, value):
+    def file_location(self, value):
         if not isinstance(value, str) or not value or "\x00" in value:
             raise AppError("Choose an audio file in your configured music folder.")
-        root = Path(self.store.settings()["music_root"]).expanduser()
-        if not root.is_dir():
-            raise AppError("Your music folder is unavailable. Connect your music drive and check the folder in Settings.", 409)
-        root = root.resolve()
         candidate = Path(value).expanduser()
-        if not candidate.is_absolute() or candidate.is_symlink():
-            raise AppError("Choose an absolute audio-file path inside your music folder.")
-        try:
-            resolved = candidate.resolve(strict=True)
-            resolved.relative_to(root)
-        except (OSError, ValueError):
-            raise AppError("That file is missing or outside your configured music folder.") from None
-        if not resolved.is_file() or resolved.suffix.lower() not in AUDIO_EXTENSIONS:
-            raise AppError("Choose a supported audio file, such as MP3, WAV, AIFF or FLAC.")
-        return resolved
+        if not candidate.is_absolute() or ".." in candidate.parts or candidate.suffix.lower() not in AUDIO_EXTENSIONS:
+            raise AppError("Choose an absolute supported audio-file path inside a configured music or download folder.")
+        settings = self.store.settings()
+        for setting in ("music_root", "download_root"):
+            if not settings.get(setting):
+                continue
+            try:
+                raw, root, identity = file_root(settings[setting])
+                try:
+                    relative = candidate.relative_to(raw)
+                except ValueError:
+                    relative = candidate.relative_to(root)
+                info, status, _ = file_snapshot(root, relative, identity)
+                if info is not None and status == "available":
+                    return root / relative, root
+            except (AppError, OSError, ValueError, RuntimeError):
+                continue
+        raise AppError("That file is unavailable or outside your configured music and download folders. Connect its drive and check Settings.", 409)
+
+    def checked_file(self, value):
+        return self.file_location(value)[0]
 
     def edit_track(self, identity, updates):
+        if not isinstance(updates, dict):
+            raise AppError("Only the editable track fields can be changed.")
+        namespace = self.namespace()
+        prior = json.loads(self.store.get(identity, namespace)["annotations"])
+        if "local_file" in updates and updates["local_file"] == prior.get("local_file", ""):
+            # An unchanged form value is not a new linking request. Leaving it
+            # out also avoids undoing a concurrent confirmed path update.
+            updates = {key: value for key, value in updates.items() if key != "local_file"}
+        requires_file_check = namespace == "real" and "local_file" in updates
+        if requires_file_check and not self.work_lock.acquire(blocking=False):
+            raise AppError("A library action is running. Wait before confirming a new file link.", 409)
+        try:
+            if namespace != self.namespace():
+                raise AppError("The active collection changed. Reopen the track before saving.", 409)
+            return self._edit_track(identity, updates)
+        finally:
+            if requires_file_check:
+                self.work_lock.release()
+
+    def _link_context(self):
+        settings = self.store.settings()
+        return settings["mode"], settings["music_root"], settings["download_root"]
+
+    def _prepare_checked_link(self, value):
+        expected = self._link_context()
+        file, root = self.file_location(value)
+        before = file_fingerprint(file, root)
+        if before is None:
+            raise AppError("The audio file is unavailable. Refresh the library and choose it again.", 409)
+        self.library.prepare_link(str(file), str(root))
+        if expected != self._link_context() or before != file_fingerprint(file, root):
+            raise AppError("The file, collection or selected folders changed. Review the file again before linking it.", 409)
+        return file
+
+    def _edit_track(self, identity, updates):
         if not isinstance(updates, dict) or set(updates) - set(MANUAL):
             raise AppError("Only the editable track fields can be changed.")
         namespace = self.namespace()
-        self.store.get(identity, namespace)
+        previous = json.loads(self.store.get(identity, namespace)["annotations"])
         clean = {}
+        confirmed_file = False
         for key, value in updates.items():
             if key == "owned":
                 if not isinstance(value, bool):
@@ -548,22 +675,28 @@ class Application:
                 if parsed.scheme not in ("https", "http") or not parsed.netloc or parsed.username or parsed.password:
                     raise AppError("Use an http or https purchase link.")
             if key == "local_file" and value and namespace == "real":
-                value = str(self.checked_file(value))
-                self.library.prepare_link(value, self.store.settings()["music_root"])
+                if value != previous.get("local_file", ""):
+                    value = str(self._prepare_checked_link(value))
+                    confirmed_file = True
             clean[key] = value
         saved = self.store.patch(identity, namespace, clean,
-                                 confirmed_file=namespace == "real" and bool(clean.get("local_file")))
+                                 confirmed_file=confirmed_file)
         return {"saved": True, "prep_status": saved["prep_status"], "musical_key": saved["musical_key"],
                 "bpm": saved["bpm"], "local_file": saved["local_file"], "owned": saved["owned"]}
 
     def link(self, identity, path):
-        if self.namespace() != "real":
-            raise AppError("Real files can only be linked in your real collection.", 409)
-        file = self.checked_file(path)
-        self.library.prepare_link(str(file), self.store.settings()["music_root"])
-        saved = self.store.patch(identity, "real", {"local_file": str(file)}, confirmed_file=True)
-        return {"linked": True, "path": str(file), "prep_status": saved["prep_status"],
-                "musical_key": saved["musical_key"], "bpm": saved["bpm"]}
+        if not self.work_lock.acquire(blocking=False):
+            raise AppError("A library action is running. Wait before confirming a file link.", 409)
+        try:
+            if self.namespace() != "real":
+                raise AppError("Real files can only be linked in your real collection.", 409)
+            self.store.get(identity, "real")
+            file = self._prepare_checked_link(path)
+            saved = self.store.patch(identity, "real", {"local_file": str(file)}, confirmed_file=True)
+            return {"linked": True, "path": str(file), "prep_status": saved["prep_status"],
+                    "musical_key": saved["musical_key"], "bpm": saved["bpm"]}
+        finally:
+            self.work_lock.release()
 
     def suggestions(self):
         return self.library.matches(self.store.rows("real"), self.store.settings()["music_root"])
@@ -574,29 +707,50 @@ class Application:
         if not self.work_lock.acquire(blocking=False):
             raise AppError("Another refresh or scan is running. Please wait.", 409)
         try:
-            root = Path(self.store.settings()["music_root"]).expanduser()
-            if not root.is_dir():
-                raise AppError("Your music folder is unavailable. Connect your music drive and check Settings.", 409)
-            root = root.resolve()
-            files, skipped, scan_errors = [], 0, []
+            _, root, root_identity = file_root(self.store.settings()["music_root"])
+            files, skipped, scan_errors, metadata, visited = [], 0, [], {}, 0
             for folder, directories, names in os.walk(str(root), followlinks=False, onerror=scan_errors.append):
+                visited += len(directories) + len(names)
+                if visited > 200000:
+                    raise AppError("This folder contains too many entries for one scan. Choose a smaller music folder; the previous inventory is kept.", 413)
+                if len(Path(folder).relative_to(root).parts) > 64:
+                    directories[:] = []
+                    skipped += 1
+                    continue
                 directories[:] = [d for d in directories if not d.startswith(".") and not (Path(folder) / d).is_symlink()]
                 for name in names:
+                    if self._closing:
+                        raise AppError("DJList stopped before the scan finished. The previous inventory is kept.", 409)
                     file = Path(folder) / name
                     if file.suffix.lower() not in AUDIO_EXTENSIONS or file.is_symlink():
                         continue
                     try:
-                        resolved = file.resolve(strict=True)
-                        resolved.relative_to(root)
-                        st = resolved.stat()
+                        relative = file.relative_to(root)
+                        st, state, _ = file_snapshot(root, relative, root_identity)
+                        if st is None or state != "available" or not stat.S_ISREG(st.st_mode):
+                            raise OSError()
                     except (OSError, ValueError):
                         skipped += 1
                         continue
-                    files.append((str(resolved), str(root), st.st_size, st.st_mtime, file.stem))
+                    path = str(root / relative)
+                    details = self.library.cached_audio_metadata(path, str(root))
+                    if details is None:
+                        details = read_audio_metadata(path, str(root))
+                    if details.get("status") in {"unavailable", "changed"}:
+                        skipped += 1
+                        continue
+                    metadata[path] = details
+                    fingerprint = details.get("fingerprint") or {}
+                    files.append((path, str(root), fingerprint.get("size", st.st_size),
+                                  fingerprint.get("mtime_ns", st.st_mtime_ns) / 1_000_000_000, file.stem))
                     if len(files) > 50000:
                         raise AppError("This scan exceeded 50,000 audio files. Choose a smaller music folder.", 413)
-            if not root.is_dir():
-                raise AppError("The SSD disconnected during scanning. Please reconnect and retry.", 409)
+            try:
+                current = root.stat()
+                if (current.st_dev, current.st_ino) != root_identity or not stat.S_ISDIR(current.st_mode):
+                    raise OSError()
+            except OSError:
+                raise AppError("The music folder changed or disconnected during scanning. The previous inventory is kept; reconnect and retry.", 409) from None
             with self.store.connect() as db:
                 existing = {r[0] for r in db.execute("SELECT path FROM files WHERE root=?", (str(root),))}
                 seen = set()
@@ -607,8 +761,17 @@ class Application:
                     db.execute("DELETE FROM files WHERE path=?", (missing,))
                 db.execute("INSERT OR REPLACE INTO settings VALUES ('last_media_refresh', ?)", (json.dumps(now()),))
                 db.execute("INSERT OR REPLACE INTO settings VALUES ('last_media_skipped', ?)", (json.dumps(skipped + len(scan_errors)),))
+            self.library.store_scan_metadata(metadata, str(root), complete=not scan_errors and not skipped)
             self.library.invalidate()
-            return {"indexed": len(files), "skipped": skipped + len(scan_errors), "suggestions": self.suggestions()}
+            result = {"indexed": len(files), "skipped": skipped + len(scan_errors),
+                      "root": str(root), "root_identity": list(root_identity),
+                      "metadata_read": sum(row.get("status") == "read" for row in metadata.values()),
+                      "metadata_issues": sum(row.get("status") in {"error", "limited", "unsupported"} for row in metadata.values()),
+                      "suggestions": self.suggestions()}
+            if not self.library_watcher.status()["running"]:
+                errors = [{"source": "media", "message": "Some files could not be scanned. Previous entries were kept."}] if result["skipped"] else []
+                self.library_watcher.acknowledge(media=result, errors=errors)
+            return result
         finally:
             self.library.invalidate()
             self.work_lock.release()
@@ -620,6 +783,7 @@ class Application:
             raise AppError("Another refresh or scan is running. Please wait.", 409)
         try:
             result = self.library.import_xml(xml, self.store.settings()["music_root"], source_name=source_name)
+            self.library_watcher.acknowledge(xml=result)
             return {**result, "suggestions": self.suggestions()}
         finally:
             self.work_lock.release()
@@ -656,6 +820,8 @@ class Application:
             result["library"]["media_skipped"] = settings.get("last_media_skipped", 0)
             result["suggestions"] = self.suggestions()
             result["partial"] = bool(result["errors"])
+            if not self.library_watcher.status()["running"]:
+                self.library_watcher.acknowledge(media=result["media"], xml=result["xml"], errors=result["errors"])
             return result
         finally:
             self.work_lock.release()
@@ -819,6 +985,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_data(200, self.app.state())
                 if path == "/api/store-job":
                     return self.send_data(200, self.app.lookup.status() if self.app.namespace() == "real" else StoreLookupQueue._idle())
+                if path == "/api/library-watch":
+                    return self.send_data(200, self.app.library_watch_status())
+                if path == "/api/setup-check":
+                    return self.send_data(200, self.app.setup_check())
                 if path == "/api/library-review":
                     try:
                         parameters = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=8)
@@ -850,6 +1020,18 @@ class Handler(BaseHTTPRequestHandler):
             data = self.body()
             if self.command == "PATCH" and path == "/api/settings":
                 result = self.app.change_settings(data)
+            elif self.command == "POST" and path == "/api/browse":
+                if set(data) != {"kind"}:
+                    raise AppError("Choose only which folder or XML file to browse for.")
+                result = self.app.browse(data.get("kind"))
+            elif self.command == "POST" and path == "/api/inbox-preview":
+                if data:
+                    raise AppError("The inbox uses the download folder saved in Settings.")
+                result = self.app.inbox_preview()
+            elif self.command == "POST" and path == "/api/inbox-apply":
+                if set(data) != {"token", "selections"}:
+                    raise AppError("Choose file and track pairs from a fresh inbox preview.")
+                result = self.app.inbox_apply(data.get("token"), data.get("selections"))
             elif self.command == "POST" and path == "/api/spotify/connect":
                 result = self.app.connect_spotify()
             elif self.command == "POST" and path == "/api/sync":
@@ -951,10 +1133,11 @@ def main(argv=None):
         print("DJList could not load its local data or interface: %s" % error, file=sys.stderr)
         return 1
     server.app = app
+    app.start_watchers()
     print("DJList %s — %s" % (VERSION, app.origin), flush=True)
     print("App folder: %s" % app.app_dir, flush=True)
     print("Your DJList records: %s" % app.store.directory, flush=True)
-    print("Spotify sign-in lasts for this run. Audio files and Rekordbox's database are read-only to this app.", flush=True)
+    print("Spotify sign-in lasts for this run. Audio metadata is read-only; the live Rekordbox database is not opened.", flush=True)
     if not args.no_browser:
         webbrowser.open(app.origin)
     try:

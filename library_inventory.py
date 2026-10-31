@@ -1,7 +1,8 @@
 """Read-only Rekordbox XML inventory, local-file suggestions and duplicate review.
 
-Only DJList's own SQLite records are written. Audio and Rekordbox databases are
-never opened for their contents or modified. XML snapshots survive missing media.
+Only DJList's own SQLite records are written. Audio tags/headers are read through
+the bounded reader; audio and Rekordbox databases are never modified. XML and
+previously read tag snapshots survive missing media.
 """
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 
 from spotify_api import AppError
+from audio_metadata import READER_VERSION, file_fingerprint, read_audio_metadata
 
 
 MAX_XML_BYTES = 20 * 1024 * 1024 - 1000
@@ -30,6 +32,11 @@ GENERIC_WORDS = {"the", "and", "with", "mix", "remix", "original", "extended", "
 
 def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def xml_fingerprint(info):
+    return {"device": info.st_dev, "inode": info.st_ino, "size": info.st_size,
+            "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
 
 
 def _normalise(value):
@@ -94,7 +101,11 @@ def _path_info(value, music_root):
     if relative is None:
         relative = _relative(path, root)
     result = {"path": str(path), "available": False, "within_root": relative is not None,
-              "unavailable_reason": "Outside the configured music folder", "size": 0, "mtime": 0.0}
+              "unavailable_reason": "Outside the configured music folder", "size": 0, "mtime": 0.0,
+              "fingerprint": None}
+    if raw_root.is_symlink():
+        result.update(within_root=False, unavailable_reason="Choose the actual music folder, not a symlink")
+        return result
     if relative is None:
         return result  # Do not probe arbitrary locations from an XML file.
     candidate = root / relative
@@ -110,7 +121,9 @@ def _path_info(value, music_root):
                 return result
         details = candidate.lstat()
         if stat.S_ISREG(details.st_mode) and candidate.suffix.lower() in AUDIO_EXTENSIONS:
-            result.update(available=True, unavailable_reason="", size=details.st_size, mtime=details.st_mtime)
+            result.update(available=True, unavailable_reason="", size=details.st_size, mtime=details.st_mtime,
+                          fingerprint={"device": details.st_dev, "inode": details.st_ino, "size": details.st_size,
+                                       "mtime_ns": details.st_mtime_ns, "ctime_ns": details.st_ctime_ns})
     except (OSError, RuntimeError):
         pass
     return result
@@ -157,6 +170,8 @@ class LibraryInventory:
                     path TEXT PRIMARY KEY, metadata TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS library_snapshot (
                     id INTEGER PRIMARY KEY CHECK(id=1), metadata TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS media_metadata (
+                    path TEXT PRIMARY KEY, root TEXT NOT NULL, metadata TEXT NOT NULL);
             """)
             if db.execute("SELECT 1 FROM library_snapshot WHERE id=1").fetchone() is None:
                 # Preserve XML metadata from an installed 0.2 collection on upgrade.
@@ -181,15 +196,70 @@ class LibraryInventory:
             self._cache = None
 
     @staticmethod
-    def _from_file(row):
+    def _from_file(row, metadata=None):
         inferred_title, inferred_artist = _filename_parts(row["path"])
-        title = row.get("title") or inferred_title
+        # Hydrated tag values are usable only with their matching fingerprint.
+        # Otherwise an edited/replaced file must fall back to its filename.
+        row_identity = row.get("origin") != "audio_tags"
+        title = (row.get("title") if row_identity else "") or inferred_title
+        artist = (row.get("artist") if row_identity else "") or inferred_artist
         if not row.get("artist") and _normalise(title) == _normalise(Path(row["path"]).stem):
             title = inferred_title
-        return {"id": _identity(row["path"]), "path": row["path"], "name": Path(row["path"]).name,
-                "title": title, "artist": row.get("artist") or inferred_artist, "album": "",
-                "key": row.get("musical_key", ""), "bpm": row.get("bpm", ""), "genre": "",
-                "duration_ms": None, "cue_count": row.get("cue_count", 0), "source": "scan"}
+        entry = {"id": _identity(row["path"]), "path": row["path"], "name": Path(row["path"]).name,
+                 "title": title, "artist": artist, "album": "",
+                 "key": row.get("musical_key", "") if row_identity else "",
+                 "bpm": row.get("bpm", "") if row_identity else "", "genre": "",
+                 "duration_ms": None, "cue_count": row.get("cue_count", 0), "source": "scan",
+                 "identity_source": "filename", "metadata_source": "", "metadata_status": "not_read",
+                 "metadata_message": "Audio tags have not been read yet.", "mime_type": "", "isrc": "", "version_notes": ""}
+        if metadata:
+            entry.update(metadata_status=metadata.get("status", "error"), metadata_message=metadata.get("message", ""))
+            if metadata.get("status") in {"read", "offline"}:
+                entry.update(title=metadata.get("title") or inferred_title,
+                             artist=metadata.get("artist") or inferred_artist, album=metadata.get("album", ""),
+                             genre=metadata.get("genre", ""), key=metadata.get("musical_key", ""),
+                             bpm=metadata.get("bpm", ""), duration_ms=metadata.get("duration_ms"),
+                             isrc=metadata.get("isrc", ""), mime_type=metadata.get("mime_type", ""),
+                             version_notes=metadata.get("version_notes", ""), metadata_source="audio_tags")
+                if metadata.get("title") and metadata.get("artist"):
+                    entry["identity_source"] = "audio_tags"
+        return entry
+
+    def cached_audio_metadata(self, path, music_root):
+        """Reuse successful/definitive tag reads only while every stat field agrees."""
+        info = _path_info(str(path), music_root)
+        fingerprint = file_fingerprint(info["path"], music_root)
+        if fingerprint is None:
+            return None
+        with self.store.connect() as db:
+            row = db.execute("SELECT metadata FROM media_metadata WHERE path=? AND root=?",
+                             (info["path"], str(_roots(music_root)[1]))).fetchone()
+        if row:
+            metadata = json.loads(row[0])
+            # Parser errors can hide transient drive I/O failures. Keep their
+            # warnings in inventory, but retry them on the next scan.
+            if (metadata.get("reader") == READER_VERSION and metadata.get("fingerprint") == fingerprint
+                    and metadata.get("status") in {"read", "empty", "unsupported"}):
+                return metadata
+        return None
+
+    def store_scan_metadata(self, results, music_root, complete=False):
+        """Save per-file read results in DJList only; results map paths to metadata."""
+        root = str(_roots(music_root)[1])
+        stored = set()
+        with self._lock, self.store.connect() as db:
+            for path, metadata in results.items():
+                info = _path_info(str(path), music_root)
+                if not info["within_root"] or not isinstance(metadata, dict):
+                    continue
+                stored.add(info["path"])
+                db.execute("INSERT OR REPLACE INTO media_metadata VALUES (?,?,?)",
+                           (info["path"], root, json.dumps(metadata)))
+            if complete:
+                for row in db.execute("SELECT path FROM media_metadata WHERE root=?", (root,)).fetchall():
+                    if row[0] not in stored:
+                        db.execute("DELETE FROM media_metadata WHERE path=?", (row[0],))
+            self._cache = None
 
     def _snapshot(self):
         with self.store.connect() as db:
@@ -205,9 +275,20 @@ class LibraryInventory:
             with self.store.connect() as db:
                 xml_rows = [json.loads(row[0]) for row in db.execute("SELECT metadata FROM library_entries ORDER BY path")]
                 files = [dict(row) for row in db.execute("SELECT * FROM files WHERE root=? ORDER BY path", (key,))]
+                metadata_rows = {row["path"]: json.loads(row["metadata"]) for row in db.execute(
+                    "SELECT path,metadata FROM media_metadata WHERE root=?", (key,))}
             entries = {row["path"]: row for row in xml_rows}
             for row in files:
-                entries.setdefault(row["path"], self._from_file(row))
+                if row["path"] in entries:
+                    continue  # The selected Rekordbox XML remains the stronger source.
+                info = _path_info(row["path"], music_root)
+                metadata = metadata_rows.get(row["path"])
+                if metadata and metadata.get("status") == "read":
+                    if info["available"] and metadata.get("fingerprint") != info["fingerprint"]:
+                        metadata = {"status": "stale", "message": "This file changed since its tags were read. Refresh media to read it again."}
+                    elif not info["available"]:
+                        metadata = {**metadata, "status": "offline", "message": "Previously read audio tags; this file is currently unavailable."}
+                entries[row["path"]] = self._from_file(row, metadata)
             result = []
             for row in entries.values():
                 info = _path_info(row["path"], music_root)
@@ -235,14 +316,15 @@ class LibraryInventory:
                 after = os.fstat(file.fileno())
             if len(payload) > MAX_XML_BYTES:
                 raise AppError("Choose a Rekordbox XML export smaller than 20 MB.", 413)
-            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            fingerprint = xml_fingerprint(before)
+            if fingerprint != xml_fingerprint(after) or fingerprint != xml_fingerprint(path.lstat()):
                 raise AppError("The XML export changed while it was being read. Finish exporting and refresh again.", 409)
             xml = payload.decode("utf-8-sig")
         except (OSError, UnicodeError):
             raise AppError("The Rekordbox XML export could not be read. Check its saved path and reconnect its drive.", 409) from None
-        return self._import_xml(xml, music_root, path.name, str(path))
+        return self._import_xml(xml, music_root, path.name, str(path), source_fingerprint=fingerprint)
 
-    def _import_xml(self, xml, music_root, source_name, source_path):
+    def _import_xml(self, xml, music_root, source_name, source_path, source_fingerprint=None):
         try:
             size = len(xml.encode("utf-8")) if isinstance(xml, str) else MAX_XML_BYTES + 1
         except UnicodeError:
@@ -289,7 +371,8 @@ class LibraryInventory:
         if items and not entries:
             raise AppError("This XML contains no usable local audio paths. The previous inventory was kept.")
         snapshot = {"source_name": source_name, "source_path": source_path, "refreshed_at": _now(),
-                    "entry_count": len(entries), "skipped": skipped, "duplicate_locations": duplicate_locations}
+                    "entry_count": len(entries), "skipped": skipped, "duplicate_locations": duplicate_locations,
+                    "source_fingerprint": source_fingerprint}
         with self._lock, self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = {row[0] for row in db.execute("SELECT path FROM library_entries")}
@@ -318,10 +401,35 @@ class LibraryInventory:
         info = _path_info(str(path), music_root)
         if not info["available"] or not info["within_root"]:
             raise AppError("That audio file is unavailable or outside your music folder.", 409)
-        with self._lock, self.store.connect() as db:
+        with self.store.connect() as db:
             row = db.execute("SELECT metadata FROM library_entries WHERE path=?", (info["path"],)).fetchone()
+        metadata = None
+        if not row:
+            metadata = self.cached_audio_metadata(info["path"], music_root)
+            if metadata is None:
+                metadata = read_audio_metadata(info["path"], music_root)
+                if metadata["status"] == "changed":
+                    raise AppError("That audio file changed while tags were read. Wait for the download or edit to finish, then review it again.", 409)
+                self.store_scan_metadata({info["path"]: metadata}, music_root)
+            current = file_fingerprint(info["path"], music_root)
+            if current is None or current != info["fingerprint"]:
+                raise AppError("That audio file changed or became unavailable. Refresh media and review the link again.", 409)
+        with self._lock, self.store.connect() as db:
             if row:
                 self._hydrate(db, json.loads(row[0]), info, str(_roots(music_root)[1]))
+            elif metadata and metadata.get("status") == "read":
+                db.execute("""INSERT INTO files(path,root,size,mtime,title,artist,musical_key,bpm,cue_count,origin)
+                              VALUES (?,?,?,?,?,?,?,?,0,'audio_tags') ON CONFLICT(path) DO UPDATE SET
+                              root=excluded.root,size=excluded.size,mtime=excluded.mtime,title=excluded.title,
+                              artist=excluded.artist,musical_key=excluded.musical_key,bpm=excluded.bpm,
+                              cue_count=0,origin='audio_tags'""",
+                           (info["path"], str(_roots(music_root)[1]), info["size"], info["mtime"],
+                            metadata.get("title", ""), metadata.get("artist", ""),
+                            metadata.get("musical_key", ""), metadata.get("bpm", "")))
+            else:
+                # Clear any older hydrated tags if the current file cannot supply them.
+                db.execute("UPDATE files SET title=?,artist='',musical_key='',bpm='',cue_count=0,origin='scan' "
+                           "WHERE path=? AND origin='audio_tags'", (Path(info["path"]).stem, info["path"]))
             self._cache = None
 
     @staticmethod
@@ -370,6 +478,8 @@ class LibraryInventory:
                 "missing": sum(row["within_root"] and not row["available"] for row in entries),
                 "outside_root": sum(not row["within_root"] for row in entries),
                 "scan_count": media_count,
+                "audio_tag_count": sum(row.get("identity_source") == "audio_tags" for row in entries),
+                "metadata_warning_count": sum(row.get("metadata_status") in {"error", "limited", "changed", "stale"} for row in entries),
                 "duplicate_groups_count": len(self._duplicate_groups(entries))}
 
     @staticmethod
@@ -413,16 +523,22 @@ class LibraryInventory:
                     reasons.append("Durations are within 2 seconds.")
             else:
                 reasons.append("Duration comparison is unavailable.")
-            if entry["source"] == "scan" or entry.get("identity_source") == "filename":
-                reasons.insert(0, "Identity was inferred from the filename; audio tags were not read.")
+            if entry.get("identity_source", "filename" if entry["source"] == "scan" else "rekordbox_xml") == "filename":
+                reasons.insert(0, "Artist/title identity was inferred from the filename; complete embedded identity is unavailable.")
                 if status == "likely_match":
                     status, score = "filename_match", min(score, 80)
+            elif entry.get("identity_source") == "audio_tags":
+                reasons.insert(0, "Artist and title were read from the audio file's tags; tag accuracy still needs your confirmation.")
+            if entry.get("version_notes"):
+                status, score = "check_version", min(score, 65)
+                reasons.append("Additional version/subtitle tags require review: " + entry["version_notes"])
             reasons.append("Confirm the recording before linking it or buying another copy.")
         if not entry["available"]:
             reasons.append(entry["unavailable_reason"] + ".")
         return {key: entry[key] for key in ("path", "name", "title", "artist", "album", "key", "bpm", "genre", "duration_ms", "cue_count", "available", "within_root", "source")} | {
             "score": score, "match_status": status, "reasons": reasons,
-            "identity_source": entry.get("identity_source", "filename" if entry["source"] == "scan" else "rekordbox_xml")}
+            "identity_source": entry.get("identity_source", "filename" if entry["source"] == "scan" else "rekordbox_xml"),
+            **{key: entry.get(key, "") for key in ("metadata_status", "metadata_message", "metadata_source", "mime_type", "isrc", "version_notes")}}
 
     def _matches(self, tracks, entries):
         bases, tokens, artists, paths = defaultdict(set), defaultdict(set), defaultdict(set), {}
