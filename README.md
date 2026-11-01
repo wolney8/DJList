@@ -595,6 +595,11 @@ imports the output. MyTag changes, track colours, existing-cue overwriting or
 removal, live database writes and arbitrary CueGen command-line flags are not
 available through this adapter.
 
+CueGen 1.0.37 appends hot cues after the highest existing slot. If this would
+go beyond H, DJList rejects that review with an explanation; it does not move
+or overwrite existing hot cues. Choose **Memory cues** for that track, or
+review its hot cues in Rekordbox and refresh XML before trying again.
+
 Real CueGen execution, sandbox/runtime compatibility and the resulting XML
 import still need verification on the user's Mac. See the
 [open-source tools assessment](docs/OPEN_SOURCE_DJ_TOOLS.md) and

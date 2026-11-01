@@ -282,6 +282,20 @@ class CueGenBridgeTests(unittest.TestCase):
         self.extra = "Info: BPM is unknown, assuming 120 BPM"
         self.assert_code("cuegen_analysis_required", self.plan)
 
+    def test_upstream_hotcue_overflow_is_rejected_with_memory_cue_guidance(self):
+        ET.SubElement(self.track, "POSITION_MARK", {"Name": "Keep H", "Type": "0", "Start": "100", "Num": "7"})
+        self.refresh()
+        originals = {path: path.read_bytes() for path in (self.master, self.xml, self.audio)}
+        self.rows[0]["Kind"] = 10
+        with self.assertRaises(CuePlannerError) as result:
+            self.plan()
+        self.assertEqual(result.exception.code, "cuegen_hotcue_slots")
+        self.assertIn("Memory cues", str(result.exception))
+        for path, original in originals.items():
+            self.assertEqual(path.read_bytes(), original)
+        self.rows[0]["Kind"] = 99
+        self.assert_code("cuegen_output_invalid", self.plan)
+
     def test_all_requested_options_are_separate_fixed_arguments(self):
         options = validate_options({"engine": "cuegen", "cue_type": "memory", "max_cues": 10, "source": "mixed_in_key", "offset_beats": -4, "snap": False, "loop_outro": 32, "color_mode": "sequence", "comment": "--energy", "colors": "1, 4,16"})
         args = _arguments(self.executable, self.root / "copy.db", str(self.audio), options)

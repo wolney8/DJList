@@ -30,7 +30,7 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import Store
-from cue_planner import CuePlanner
+from cue_planner import CuePlanner, CuePlannerError
 from cuegen_bridge import CueGenBridge, run_bounded
 from library_inventory import LibraryInventory
 from rekordbox_backups import RekordboxBackups
@@ -74,7 +74,7 @@ def phrase_fixture(directory):
     (directory / "ANLZ0000.EXT").write_bytes(_analysis(_section(b"PSSI", 32, phrase_header + phrases)))
 
 
-def database_fixture(sqlcipher, target, audio, other_audio):
+def database_fixture(sqlcipher, target, audio, other_audio, hot_cues=()):
     """Create a closed encrypted fixture containing two tracks and one old cue."""
     sql = "\n".join([
         "PRAGMA key=" + _quote(FIXTURE_PASSPHRASE) + ";",
@@ -96,8 +96,15 @@ def database_fixture(sqlcipher, target, audio, other_audio):
         "INSERT INTO djmdCue VALUES ('1','17',12000,-1,0,'Keep memory cue',"
         "'00000000-0000-0000-0000-000000000001','2026-01-01T00:00:00.000+00:00');",
         "INSERT INTO contentCue VALUES ('1','17','[]');",
-        "PRAGMA integrity_check;",
     ])
+    for index, (slot, seconds) in enumerate(hot_cues, 2):
+        kind = slot + 1 if slot < 3 else slot + 2
+        sql += ("\nINSERT INTO djmdCue VALUES (" + _quote(index) + ",'17',"
+                + str(seconds * 1000) + ",-1," + str(kind) + ","
+                + _quote("Keep " + chr(65 + slot)) + ","
+                + _quote("00000000-0000-0000-0000-" + str(index).zfill(12))
+                + ",'2026-01-01T00:00:00.000+00:00');")
+    sql += "\nPRAGMA integrity_check;"
     result = subprocess.run([str(sqlcipher), str(target)], input=sql, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             timeout=30, check=False)
@@ -185,7 +192,7 @@ def _ci_native_diagnostics(started_at):
             print("CI crash report could not be read:", str(error))
 
 
-def run(sqlcipher):
+def run(sqlcipher, hot_cues=()):
     if sys.platform != "darwin":
         raise RuntimeError("This check requires a real macOS runner and sandbox-exec; there is no unsandboxed fallback.")
     sqlcipher = Path(sqlcipher).resolve(strict=True)
@@ -206,7 +213,7 @@ def run(sqlcipher):
         analysis = database_dir / "share"
         phrase_fixture(analysis / "ANLZ" / "fixture")
         master = database_dir / "master.db"
-        database_fixture(sqlcipher, master, audio, other_audio)
+        database_fixture(sqlcipher, master, audio, other_audio, hot_cues)
 
         source_xml = root / "synthetic.xml"
         document = ET.Element("DJ_PLAYLISTS", {"Version": "1.0.0"})
@@ -217,6 +224,9 @@ def run(sqlcipher):
             "Comments": "Keep original metadata", "Rating": "255"})
         ET.SubElement(track, "TEMPO", {"Inizio": "0", "Bpm": "120", "Metro": "4/4", "Battito": "1"})
         ET.SubElement(track, "POSITION_MARK", {"Name": "Keep memory cue", "Type": "0", "Start": "12", "Num": "-1"})
+        for slot, seconds in hot_cues:
+            ET.SubElement(track, "POSITION_MARK", {"Name": "Keep " + chr(65 + slot), "Type": "0",
+                                                   "Start": str(seconds), "Num": str(slot)})
         source_xml.write_bytes(ET.tostring(document, encoding="utf-8", xml_declaration=True))
         source_paths = [master, audio, other_audio, source_xml, *sorted(analysis.rglob("*.DAT")), *sorted(analysis.rglob("*.EXT"))]
         before = _hashes(source_paths)
@@ -251,10 +261,29 @@ def run(sqlcipher):
         try:
             prepared = bridge.prepare_runtime()
             print("Actual sandboxed CueGen runtime check:", prepared)
-            plan = bridge.plan(entry_id, {"engine": "cuegen", "source": "phrases", "cue_type": "hot",
-                                          "max_cues": 8, "min_distance_bars": 4})
+            options = {"engine": "cuegen", "source": "phrases", "cue_type": "hot",
+                       "max_cues": 8, "min_distance_bars": 4}
+            if any(slot == 7 for slot, _ in hot_cues):
+                try:
+                    bridge.plan(entry_id, options)
+                except CuePlannerError as error:
+                    if error.code != "cuegen_hotcue_slots":
+                        raise
+                    output = engine_results[-1]["output"]
+                    if '"Kind":10,' not in output or "Finished cue points creation without errors" not in output:
+                        raise AssertionError("The native high-slot case must reproduce actual upstream overflow.")
+                    print("PASS: actual CueGen appends beyond H; invalid slots are rejected with memory-cue guidance.")
+                else:
+                    raise AssertionError("The pinned engine's beyond-H proposals must never become exportable.")
+                # The advised fallback must also work with the original B/H
+                # slots still present in both encrypted fixture and source XML.
+                options["cue_type"] = "memory"
+            plan = bridge.plan(entry_id, options)
             actual = [(row["name"], row["time"], row["slot"]) for row in plan["suggestions"]]
-            expected = [("Intro", 0.0, 0), ("Chorus", 32.0, 1), ("Outro", 64.0, 2)]
+            first_slot = max((slot for slot, _ in hot_cues), default=-1) + 1
+            slots = [-1] * 3 if options["cue_type"] == "memory" else list(range(first_slot, first_slot + 3))
+            expected = [(name, seconds, slot) for (name, seconds), slot in
+                        zip((("Intro", 0.0), ("Chorus", 32.0), ("Outro", 64.0)), slots)]
             if actual != expected:
                 raise AssertionError("Real engine marker mismatch: " + repr(actual) + "; warnings=" + repr(plan["warnings"]))
             exported = planner.export(plan["token"], [row["id"] for row in plan["suggestions"]])
@@ -263,9 +292,9 @@ def run(sqlcipher):
                 raise AssertionError("Export changed original track metadata.")
             original_children = [ET.tostring(child) for child in track]
             if [ET.tostring(child) for child in saved_track][:len(original_children)] != original_children:
-                raise AssertionError("Export changed the existing grid or memory cue.")
-            if len(saved_track.findall("POSITION_MARK")) != 4:
-                raise AssertionError("Expected the original memory cue and exactly three reviewed hot cues.")
+                raise AssertionError("Export changed the existing grid, memory cue or hot cues.")
+            if len(saved_track.findall("POSITION_MARK")) != 4 + len(hot_cues):
+                raise AssertionError("Expected every original cue and exactly three reviewed additions.")
             if _hashes(source_paths) != before:
                 raise AssertionError("A source database, audio, XML or analysis file changed.")
             records = backups.status()["backups"]
@@ -274,6 +303,8 @@ def run(sqlcipher):
             print("PASS: actual pinned CueGen, mandatory macOS sandbox, encrypted synthetic database, "
                   "native SQLCipher, phrase/grid parsing, exact selected track, Intro/Chorus/Outro at 0/32/64s, "
                   "reviewed XML preserves original markers and metadata, all source hashes unchanged.")
+            print("Verified cue layout:", {"existing_hot_slots": [chr(65 + slot) for slot, _ in hot_cues],
+                                           "generated_type": options["cue_type"], "generated_slots": slots})
         except Exception:
             for result in engine_results[-2:]:
                 print("Real fixture engine return code:", result["returncode"])
@@ -289,3 +320,5 @@ if __name__ == "__main__":
     parser.add_argument("--sqlcipher", required=True, help="Official SQLCipher CLI used only to build the synthetic CI database")
     arguments = parser.parse_args()
     run(arguments.sqlcipher)
+    run(arguments.sqlcipher, hot_cues=((1, 24),))
+    run(arguments.sqlcipher, hot_cues=((1, 24), (7, 48)))

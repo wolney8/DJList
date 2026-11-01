@@ -259,6 +259,11 @@ def parse_proposals(result, source, options):
             if not 0 <= start < source["duration"] * 1000 or end != -1 and not start < end <= source["duration"] * 1000:
                 raise ValueError()
             if options["cue_type"] == "hot":
+                if 10 <= kind <= 17:
+                    # Upstream 1.0.37 appends after max(existing Kind), rather
+                    # than filling free A-H slots. Reject its overflow without
+                    # changing the source or guessing a replacement slot.
+                    raise _error("CueGen returned a hot cue beyond H instead of filling empty slots. No suggestions were accepted. Choose Memory cues for this track, or review its hot cues in Rekordbox and refresh XML before trying again.", "cuegen_hotcue_slots")
                 if kind not in {1, 2, 3, 5, 6, 7, 8, 9}:
                     raise ValueError()
                 slot = kind - 1 if kind < 4 else kind - 2

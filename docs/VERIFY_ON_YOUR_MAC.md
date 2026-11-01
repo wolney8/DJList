@@ -29,6 +29,7 @@ An unimported copy may correctly show **Cues unknown**.
 | --- | --- |
 | Start a media refresh, then open Settings | Activity names the scan. Spotify connection settings remain usable during unrelated disk work. |
 | Preview a copied track and load its waveform | Sound plays; scrubbing changes the position; the spectrum responds to playback. |
+| Check a wishlist price against its linked shop page | The provider, currency and exact mix match. Unavailable prices remain unknown; opening the page does not mark the song downloaded. |
 | Inspect a suspected duplicate pair | Both locations are visible; XML cue evidence matches what you exported. Unknown is not reported as zero. |
 | Review one filename cleanup, apply it, then undo | The exact filename changes and is restored; DJList records both operations. |
 | Move one test copy to Removed, then undo | The copy returns to its original location; the untouched original remains present. Removed storage does not free disk space. |
@@ -49,13 +50,15 @@ passed protected startup check. There is no separate CueGen launch or command.
 An installed component with a failed startup check is not a passing result.
 
 Use one analysed test copy already imported into Rekordbox, with phrase
-analysis, a checked beatgrid, at least one free hot-cue slot and a fresh XML
-export. Close Rekordbox. In **Plan cues**, use phrases, eight hot cues and
+analysis, a checked beatgrid, no existing hot cues and a fresh XML export.
+You can keep a memory cue to check that it is preserved. Close Rekordbox.
+In **Plan cues**, use phrases, eight hot cues and
 four-bar spacing. Listen around a few suggestions, export only those selected,
 then import only that test track in Rekordbox. Pass: it plays from the expected
 file, the selected new cues are sensible, and its earlier cues/grid remain.
-Existing full cue slots or missing phrase analysis may correctly produce no
-new suggestions.
+For an already cued track, choose **Memory cues** if the engine reports no
+remaining hot-cue slots after H. Existing hot cues stay in place. Missing phrase
+analysis may correctly produce no new suggestions.
 
 For relocation, first refresh an XML containing the test track's original
 record. Close Rekordbox and rename that test copy in DJList. In Rekordbox use

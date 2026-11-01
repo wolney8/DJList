@@ -13,22 +13,23 @@ Branch: `work/internal-cuegen-relocation`. The application and API remain
 **0.7.0 / 7**; no new release or user installation is claimed. The original
 0.7 verification below is retained as historical evidence.
 
-- **417 Python tests pass locally**, including managed component provisioning,
+- **418 Python tests pass locally**, including managed component provisioning,
   protected startup-result validation, request boundaries and persistent
   relocation evidence. JavaScript helper/syntax and whitespace checks pass.
 - The existing synthetic localhost HTTP workflow passes after the integration.
-- The first work-branch CI caught an actual protected-startup failure. A narrow
-  macOS loader fix now lets the real pinned CueGen engine open the disposable
-  encrypted database and generate the expected Intro/Chorus/Outro positions.
-  That run exposed a second defect: the real engine's quoted log fields and
-  full level names differed from the earlier fixture. The parser and fixtures
-  now follow that captured format; a passing full native run is still required.
+- **Actual CueGen passes on an Intel Mac runner** in
+  [run 41290278365](https://github.com/wolney8/DJList/actions/runs/41290278365)
+  at `b261acf2297717f8035cd2bb714f7d38b108a683`. The ordinary Linux/macOS jobs
+  also pass. Native testing exposed and fixed two real defects: a missing
+  literal-root read needed by the macOS loader, and the pinned executable's
+  quoted/full-level log format differing from the earlier mock fixture.
 - `tools/cuegen_runtime_smoke.py` provisions the actual pinned official binary,
   uses the production macOS sandbox, and builds a synthetic SQLCipher database
-  plus two audio/analysis records. Its intended assertions cover Intro/Chorus/
-  Outro positions, exact selected-track scope, retained existing XML cues/grid,
+  plus two audio/analysis records. The passing run verifies Intro/Chorus/Outro
+  at 0/32/64 seconds, exact selected-track scope, retained existing XML cues/grid,
   unchanged source hashes and a checked backup. Only the closed-library process
-  result is injected; passing mock tests alone does not satisfy this check.
+  result is injected. Follow-up native cases for existing B/H hot cues and a
+  memory-cue fallback are in the harness but still await their own passing run.
 - New UI source wiring and script syntax were checked. The cloud preview could
   not be visually exercised because its error tab was blocked by the browser
   URL policy; no browser-policy workaround was attempted. The earlier 0.7
@@ -36,6 +37,9 @@ Branch: `work/internal-cuegen-relocation`. The application and API remain
 - Rekordbox relocation is a durable handoff and **Verified in XML** check only.
   No live database/ANLZ writer, automatic relocation or full-library restore
   verification is implemented or installed on the user's Mac.
+- Apple Silicon/Rosetta, actual user phrase/Mixed In Key data, musical cue
+  quality, Rekordbox XML import and the user's real backup/restore workflow
+  remain unverified. The successful synthetic Intel check does not certify them.
 
 The short [Mac verification guide](docs/VERIFY_ON_YOUR_MAC.md) covers the real
 SSD, playback, Incoming, metadata, activity, backup and one-track checks still
