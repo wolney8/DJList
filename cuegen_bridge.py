@@ -120,6 +120,8 @@ def _sandbox_base(work, executable):
     # .NET's self-contained executable extracts native libraries into bundle.
     # Executable mappings need their own explicit allow under deny-default.
     # macOS dyld system libraries may be supplied through its Cryptex paths.
+    # dyld's ignition bootstrap opens the root directory before locating those
+    # caches. Permit that inode only, never a read grant to the whole tree.
     system = ("/System/Library", "/usr/lib", "/usr/share", "/private/var/db/dyld",
               "/System/Cryptexes/App", "/System/Cryptexes/OS",
               "/System/Volumes/Preboot/Cryptexes/App/System", "/System/Volumes/Preboot/Cryptexes/OS")
@@ -132,6 +134,7 @@ def _sandbox_base(work, executable):
         "(allow process-fork)", "(allow process-exec (literal " + quote(executable) + "))",
         "(allow signal (target self))",
         "(allow sysctl-read)", "(allow mach-lookup)", "(allow file-read-metadata)",
+        '(allow file-read-data (literal "/"))',
         "(allow file-read-data " + reads + " " + literals + ")",
         "(allow file-map-executable (literal " + quote(executable) + ") " + executable_maps + ")",
         "(allow file-write* (subpath " + quote(work) + "))",

@@ -161,6 +161,10 @@ class CueGenBridgeTests(unittest.TestCase):
         self.assertNotIn(str(self.master), profile)
         self.assertNotIn(str(self.audio), profile)
         self.assertIn("(allow file-map-executable", profile)
+        # The loader may open the root directory, but must not gain permission
+        # to read its descendants (including the actual collection database).
+        self.assertIn('(allow file-read-data (literal "/"))', profile)
+        self.assertNotIn('(subpath "/")', profile)
         self.assertIn("(deny network*)", profile)
         self.assertEqual(self.backups.status()["backups"], [])
 

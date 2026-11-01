@@ -120,11 +120,28 @@ def _ci_native_diagnostics(started_at):
     """
     if os.environ.get("GITHUB_ACTIONS") != "true":
         return
+    # Compare the loader's shipped rules with the narrow production allowlist.
+    # Fixed OS-owned paths only; never import an unchecked profile into policy.
+    for name in ("/System/Library/Sandbox/Profiles/dyld-support.sb",
+                 "/usr/share/sandbox/dyld-support.sb"):
+        path = Path(name)
+        try:
+            if path.is_file() and path.stat().st_size <= 32 * 1024:
+                print("CI OS dyld profile:", name)
+                print(path.read_text(errors="replace"))
+        except OSError as error:
+            print("CI OS dyld profile unavailable:", str(error))
+    for name in ("/System/Cryptexes/App", "/System/Cryptexes/OS",
+                 "/System/Volumes/Preboot/Cryptexes/App/System",
+                 "/System/Volumes/Preboot/Cryptexes/OS", "/private/var/db/dyld"):
+        path = Path(name)
+        print("CI OS cache path:", name, "=>", path.resolve(), "exists:", path.exists())
     try:
         result = run_bounded([
-            "/usr/bin/log", "show", "--last", "2m", "--style", "compact",
+            "/usr/bin/log", "show", "--last", "2m", "--style", "compact", "--info", "--debug",
             "--predicate", 'eventMessage CONTAINS[c] "CueGen.Console" OR '
-            '(process == "sandboxd" AND eventMessage CONTAINS[c] "deny")',
+            '((process == "sandboxd" OR process == "kernel") AND '
+            'eventMessage CONTAINS[c] "deny")',
         ], cwd=Path.cwd(), env=dict(os.environ), timeout=15, output_limit=128 * 1024)
         print("CI sandbox/loader diagnostics:", result["returncode"])
         print(result["output"][-16000:])
@@ -220,6 +237,10 @@ def run(sqlcipher):
             # This delegates to the production subprocess implementation. Logs
             # are printed only on failure and refer solely to this synthetic
             # fixture, making native loader/SQLCipher CI failures diagnosable.
+            if os.environ.get("GITHUB_ACTIONS") == "true" and argv[:2] == ["/usr/bin/sandbox-exec", "-p"]:
+                # Denial logging changes no sandbox permissions and helps
+                # identify the actual operation rejected by a CI OS update.
+                argv = [*argv[:2], argv[2] + "\n(debug deny)", *argv[3:]]
             result = run_bounded(argv, **options)
             engine_results.append(result)
             return result
