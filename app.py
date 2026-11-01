@@ -51,6 +51,7 @@ from file_operations import FileOperations
 from local_media import LocalMedia
 from metadata_review import MetadataReview
 from cuegen_bridge import CueGenBridge
+from rekordbox_relocation import RekordboxRelocation
 
 VERSION = "0.7.0"
 API_VERSION = 7
@@ -340,6 +341,7 @@ class Application:
         self.local_media = LocalMedia(self.store, self.library)
         self.metadata_review = MetadataReview(self.store, self.library)
         self.cuegen = CueGenBridge(self.store, self.backups, self.cue_planner)
+        self.rekordbox_relocation = RekordboxRelocation(self.store, self.library)
         self.picker = NativePicker()
         self.library_watcher = LibraryWatcher(self.store.settings, self._automatic_library_refresh, self.library.invalidate)
         self.lookup = StoreLookupQueue(self.store, lambda query, reference, force=False: self.catalog.search(query, reference, force=force))
@@ -372,7 +374,8 @@ class Application:
                       "export": "Exporting reviewed cue markers", "create": "Backing up the Rekordbox database",
                       "verify": "Checking a database backup", "review": "Reviewing library health",
                       "export_report": "Exporting the library report", "preview": "Preparing a file review",
-                      "apply": "Applying reviewed file changes", "undo_apply": "Undoing reviewed file changes"}
+                      "apply": "Applying reviewed file changes", "undo_apply": "Undoing reviewed file changes",
+                      "prepare_runtime": "Preparing the built-in cue engine"}
             label = labels.get(getattr(callback, "__name__", ""), "Reviewing library information")
             with self.activity.track("library", label):
                 return callback(*args, **kwargs)
@@ -416,11 +419,24 @@ class Application:
         if not isinstance(options, dict):
             raise AppError("Choose valid cue planning options.")
         if options.get("engine") == "cuegen":
-            return self.library_task(self.cuegen.plan, entry_id, options)
+            return self.library_task(self.cuegen.plan, entry_id, options, progress=self.cuegen_progress)
         clean = dict(options)
         if clean.pop("engine", "xml") != "xml":
             raise AppError("Choose XML grid spacing or CueGen.")
         return self.library_task(self.cue_planner.plan, entry_id, clean)
+
+    def cuegen_progress(self, phase, completed=None, total=None):
+        self.activity.update(phase=phase,
+                             completed=round(completed / 1048576, 1) if completed is not None else 0,
+                             total=round(total / 1048576, 1) if total is not None else 0,
+                             unit="MB" if total else "")
+
+    def prepare_cue_engine(self):
+        return self.library_task(self.cuegen.prepare_runtime, progress=self.cuegen_progress)
+
+    @reported("rekordbox-relocation", "Checking renamed tracks against fresh Rekordbox XML")
+    def verify_rekordbox_relocation(self):
+        return self.library_task(self.rekordbox_relocation.verify)
 
     def library_watch_status(self):
         settings = self.store.settings()
@@ -555,6 +571,7 @@ class Application:
                                  "preview_audio": "assets/download-on-itunes.svg" in self.assets,
                                  "local_audio_preview": True, "library_workspace": True,
                                  "metadata_review": True, "file_operations": True,
+                                 "rekordbox_relocation_review": True, "managed_cuegen": True,
                                  "cue_generation": self.cuegen.status().get("supported", False),
                                  "rekordbox_xml_export": True, "file_moves": True,
                                  "rekordbox_database_writes": False}}
@@ -1167,6 +1184,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_data(200, self.app.library_task(self.app.file_operations.history))
                 if path == "/api/cuegen/status":
                     return self.send_data(200, self.app.cuegen.status())
+                if path == "/api/rekordbox-relocation":
+                    return self.send_data(200, self.app.library_task(self.app.rekordbox_relocation.status))
                 if path == "/api/store-job":
                     return self.send_data(200, self.app.lookup.status() if self.app.namespace() == "real" else StoreLookupQueue._idle())
                 if path == "/api/library-watch":
@@ -1244,6 +1263,14 @@ class Handler(BaseHTTPRequestHandler):
                 if set(data) - {"entry_id", "options"} or "entry_id" not in data:
                     raise AppError("Choose a library track and cue spacing.")
                 result = self.app.plan_cues(data.get("entry_id"), data.get("options", {}))
+            elif self.command == "POST" and path == "/api/cuegen/prepare":
+                if data:
+                    raise AppError("The built-in cue engine uses only its verified component and saved settings.")
+                result = self.app.prepare_cue_engine()
+            elif self.command == "POST" and path == "/api/rekordbox-relocation/verify":
+                if data:
+                    raise AppError("Verification reads the Rekordbox XML file saved in Settings.")
+                result = self.app.verify_rekordbox_relocation()
             elif self.command == "POST" and path == "/api/file-operations/preview":
                 if set(data) - {"action", "entry_ids", "options"} or not {"action", "entry_ids"} <= set(data):
                     raise AppError("Choose an action and explicit library files to review.")

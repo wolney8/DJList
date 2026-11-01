@@ -21,6 +21,21 @@ from library_inventory import LibraryInventory
 from rekordbox_backups import RekordboxBackups
 
 
+class FixtureRuntime:
+    """The bridge guard tests never download or execute a third-party binary."""
+    def __init__(self, store):
+        self.store = store
+
+    def prepare(self, progress=None):
+        return self.verified_path()
+
+    def verified_path(self, force=False):
+        return Path(self.store.settings()["cuegen_path"])
+
+    def status(self):
+        return {"installed": self.verified_path().exists(), "message": "Synthetic installed engine"}
+
+
 class CueGenBridgeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -55,12 +70,15 @@ class CueGenBridgeTests(unittest.TestCase):
         ET.SubElement(self.track, "TEMPO", {"Inizio": "0", "Bpm": "120", "Metro": "4/4", "Battito": "1"})
         self.refresh()
         self.calls = []
+        self.probe_calls = []
+        self.probe_result = {"returncode": 0, "output": "Usage: CueGen.Console [OPTION]...\nVersion 1.0.37.0\n"}
         self.rows = [{"ContentID": "17", "InMsec": 64000, "OutMsec": -1, "Kind": 1, "Comment": "Verse", "ColorTableIndex": 1}]
         self.version = "1.0.37.0"
         self.exit_code = 1
         self.extra = ""
         self.bridge = CueGenBridge(self.store, self.backups, self.planner, runner=self.runner,
-                                   process_checker=self.closed, platform="darwin", sandbox_path=str(self.sandbox))
+                                   process_checker=self.closed, platform="darwin", sandbox_path=str(self.sandbox),
+                                   runtime=FixtureRuntime(self.store))
 
     def tearDown(self):
         self.backups.close()
@@ -81,6 +99,11 @@ class CueGenBridgeTests(unittest.TestCase):
                           "Info: Finished cue points creation without errors"])
 
     def runner(self, args, **kwargs):
+        if args[-1] == "--help":
+            self.probe_calls.append((args, kwargs))
+            self.assertFalse(any(arg.startswith("--db=") for arg in args))
+            self.assertFalse((kwargs["cwd"] / "share").exists())
+            return self.probe_result
         self.calls.append((args, kwargs))
         path = Path(next(arg.split("=", 1)[1] for arg in args if arg.startswith("--db=")))
         self.assertNotEqual(path, self.master)
@@ -125,6 +148,47 @@ class CueGenBridgeTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), original)
         snapshot = self.backups.status()["backups"][0]
         self.assertEqual((Path(snapshot["path"]) / "master.db").read_bytes(), originals[self.master])
+
+    def test_internal_setup_checks_version_without_database_or_audio_access(self):
+        self.master.unlink()
+        self.audio.unlink()
+        result = self.bridge.prepare_runtime()
+        self.assertEqual(result["runtime_check"], "passed")
+        self.assertEqual(result["version"], "1.0.37")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(len(self.probe_calls), 1)
+        profile = self.probe_calls[0][0][2]
+        self.assertNotIn(str(self.master), profile)
+        self.assertNotIn(str(self.audio), profile)
+        self.assertIn("(allow file-map-executable", profile)
+        self.assertIn("(deny network*)", profile)
+        self.assertEqual(self.backups.status()["backups"], [])
+
+    def test_internal_setup_fails_closed_and_status_reports_failed_probe(self):
+        self.probe_result = {"returncode": 1, "output": "runtime unavailable"}
+        self.assert_code("cuegen_runtime", self.bridge.prepare_runtime)
+        self.assertEqual(self.bridge.status()["runtime_check"], "failed")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.backups.status()["backups"], [])
+
+    def test_runtime_success_is_not_reported_after_executable_changes(self):
+        self.bridge.prepare_runtime()
+        self.executable.write_bytes(b"\xcf\xfa\xed\xfe changed test executable")
+        self.assertEqual(self.bridge.status()["runtime_check"], "not_checked")
+        self.bridge.prepare_runtime()
+        self.assertEqual(len(self.probe_calls), 2)
+
+    def test_runtime_probe_is_reused_only_for_same_installed_file(self):
+        self.bridge.prepare_runtime()
+        self.plan()
+        self.assertEqual(len(self.probe_calls), 1)
+
+    def test_phrase_order_and_names_trim_human_entered_spaces(self):
+        options = validate_options({"phrase_order": "Intro, Outro, Verse, Chorus, Bridge, Up / Down",
+                                    "phrase_names": " Intro, Verse, Bridge, Chorus, Outro, Up, Down "})
+        args = _arguments(self.executable, self.master, str(self.audio), options)
+        self.assertIn("--order=Intro,Outro,Verse,Chorus,Bridge,Up/Down", args)
+        self.assertIn("--names=Intro,Verse,Bridge,Chorus,Outro,Up,Down", args)
 
     def test_memory_loops_preserve_existing_cues_and_use_num_minus_one(self):
         ET.SubElement(self.track, "POSITION_MARK", {"Name": "Keep hot A", "Type": "0", "Num": "0", "Start": "4"})

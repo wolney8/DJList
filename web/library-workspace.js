@@ -1,7 +1,7 @@
 /* A page-sized workspace for reviewing local files. Selections are always explicit. */
 "use strict";
 (function(scope) {
-  const SECTIONS = {all:"All files",duplicates:"Duplicates",missing:"Missing & offline",metadata:"Metadata review",history:"File history"};
+  const SECTIONS = {all:"All files",duplicates:"Duplicates",missing:"Missing & offline",metadata:"Metadata review",relocation:"Rekordbox locations",history:"File history"};
   const FIELD_LABELS = {artist:"Artist",title:"Title",version:"Mix / version",version_notes:"Mix / version",featured_artists:"Featuring",featured:"Featuring"};
   function el(tag, className, text) { const node=document.createElement(tag);if(className)node.className=className;if(text!=null)node.textContent=String(text);return node; }
   function button(text, className="button button-outlined") { const node=el("button",className,text);node.type="button";return node; }
@@ -32,6 +32,12 @@
     const nav=el("nav","lw-nav");nav.setAttribute("aria-label","Library views");
     const tabs=new Map();for(const [key,label] of Object.entries(SECTIONS)){const b=button(label,"lw-nav-button");b.addEventListener("click",()=>open(key));tabs.set(key,b);nav.append(b);}
     const description=el("p","lw-section-description");
+    const relocationHelp=el("section","lw-relocation-help");relocationHelp.hidden=true;relocationHelp.setAttribute("aria-labelledby","lw-relocation-heading");
+    const relocationHeading=el("h2","","Finish a rename in Rekordbox");relocationHeading.id="lw-relocation-heading";
+    const relocationSteps=el("ol");
+    for(const text of ["Open Rekordbox → File → Display All Missing Files. Select the renamed track and choose Relocate.","Use Copy new path below. In the Mac file chooser, press Command–Shift–G, paste the new path, then select the file. Keep the existing collection entry.","Check the track plays with its cues and playlists, export fresh XML to your saved location, then check it here."])relocationSteps.append(el("li","",text));
+    const verifyLocations=button("Check fresh Rekordbox XML","button button-primary");
+    relocationHelp.append(relocationHeading,el("p","","DJList records each rename. Rekordbox performs the actual relocation; this screen does not write its database."),relocationSteps,verifyLocations);
     const form=el("form","lw-controls"), searchWrap=el("div","lw-search"), searchLabel=el("label","field-label","Search library"), search=el("input");search.type="search";search.id="workspace-library-search";search.maxLength=500;search.placeholder="Artist, title or full file path";search.autocomplete="off";searchLabel.htmlFor=search.id;searchWrap.append(searchLabel,search);
     const missingWrap=el("div"), missingLabel=el("label","field-label","File status"), missing=el("select");missing.id="workspace-missing-kind";missingLabel.htmlFor=missing.id;
     for(const [value,label] of [["missing","Missing files"],["offline","Drive unavailable"],["outside_root","Outside selected folders"],["unsafe","Paths needing review"]]){const o=el("option","",label);o.value=value;missing.append(o);}missingWrap.append(missingLabel,missing);
@@ -46,7 +52,7 @@
     const entries=el("div","lw-entries"), footer=el("footer","lw-footer"), total=el("span","lw-total"), pageNav=el("nav","pagination");pageNav.setAttribute("aria-label","Library result pages");
     const previous=button("Previous","button button-quiet"), page=el("span","lw-page","Page 1 of 1"), next=button("Next","button button-quiet");pageNav.append(previous,page,next);
     const report=el("a","button button-outlined","Export health report");report.href="/api/library-audit.csv";report.download="DJList-library-health.csv";footer.append(total,pageNav,report);
-    root.append(heading,metrics,nav,description,form,notice,error,status,bulk,review,playerMount,entries,footer);
+    root.append(heading,metrics,nav,description,relocationHelp,form,notice,error,status,bulk,review,playerMount,entries,footer);
     function real() { return getData()?.mode==="real" && isCompatible(); }
     function message(text="",warning=false) {notice.textContent=text;notice.hidden=!text;notice.classList.toggle("is-warning",warning);}
     function fail(text="") {error.textContent=text;error.hidden=!text;}
@@ -75,6 +81,7 @@
         if(!real())throw new Error("Open your real collection to review local files.");
         let result;
         if(state.section==="history")result=await api("/api/file-operations");
+        else if(state.section==="relocation")result=await api("/api/rekordbox-relocation");
         else if(state.section==="duplicates"||state.section==="missing")result=await api(`/api/library-audit?${new URLSearchParams({q:state.query,kind:state.section==="duplicates"?"duplicates":state.kind,page:String(state.page),page_size:String(state.pageSize)})}`);
         else result=await api(`/api/library-review?${new URLSearchParams({q:state.query,filter:state.section==="metadata"?"metadata":"all",page:String(state.page),page_size:String(state.pageSize)})}`);
         if(request!==state.request||!state.active)return;
@@ -83,11 +90,12 @@
       finally{if(request===state.request){markBusy(false);entries.removeAttribute("aria-busy");}}
     }
     function render(result) {
-      state.entries.clear();entries.replaceChildren();state.page=Number(result.page||1);state.pages=Math.max(1,Number(result.pages||1));
+      state.entries.clear();entries.replaceChildren();if(state.section!=="relocation")state.page=Number(result.page||1);state.pages=Math.max(1,Number(result.pages||1));
       previous.disabled=state.page<=1;next.disabled=state.page>=state.pages;page.textContent=`Page ${state.page} of ${state.pages}`;
       if(result.summary)summaryCards(result.summary);
       const warnings=[...(result.warnings||[])];if(result.truncated||result.duplicate_groups_truncated)warnings.push("This review reached a limit. Use a smaller selected folder or XML export to review the rest.");message(warnings.join(" "),warnings.length>0);
       if(state.section==="history"){renderHistory(result);return;}
+      if(state.section==="relocation"){renderRelocations(result);return;}
       const rows=result.entries||result.issues||[];
       for(const entry of rows){if(entry.kind==="duplicate")entries.append(duplicateCard(entry));else entries.append(fileCard(entry));}
       if(!rows.length)entries.append(emptyState(state.section==="metadata"?"No metadata issues in this view":"No files match this view",state.section==="all"?"Refresh media or import a Rekordbox XML export to list your collection.":"Change the search or choose another library view."));
@@ -145,6 +153,27 @@
       }
       if(!items.length)entries.append(emptyState("No file changes recorded","Renames and moves to Removed will appear here, with a reviewed undo action."));
     }
+    function renderRelocations(result){
+      const counts=result.counts||{};metrics.replaceChildren();
+      for(const [label,value]of [["Pending",counts.pending],["Verified in XML",counts.verified],["Needs review",counts.blocked],["Removed",counts.removed],["Tracked files",counts.total]]){const box=el("div","lw-metric");box.append(el("strong","",count(value)),el("span","",label));metrics.append(box);}
+      const query=state.query.toLocaleLowerCase(), rows=(result.entries||[]).filter(row=>!query||[row.title,row.artist,row.original_path,row.current_path,row.track_id,row.status].join(" ").toLocaleLowerCase().includes(query));
+      state.pages=Math.max(1,Math.ceil(rows.length/state.pageSize));state.page=Math.min(Math.max(1,state.page),state.pages);page.textContent=`Page ${state.page} of ${state.pages}`;
+      previous.disabled=state.page<=1;next.disabled=state.page>=state.pages;total.textContent=`${rows.length} tracked ${rows.length===1?"file":"files"}`;
+      for(const row of rows.slice((state.page-1)*state.pageSize,state.page*state.pageSize)){
+        const card=el("article","lw-file"), statusLabel={pending:"Relocation pending",verified:"Verified in XML",needs_review:"Needs review",blocked:"Needs review",removed:"Moved to Removed",restored:"Original filename restored"}[row.status]||"Needs review";
+        card.append(el("h2","",row.title||String(row.current_path||row.original_path||"Renamed file").split("/").pop()),el("p","lw-file-artist",row.artist||"Artist not recorded"),el("p",row.status==="verified"?"lw-relocation-verified":"lw-file-warning",statusLabel));
+        if(row.message)card.append(el("p","lw-status",row.message));
+        const paths=el("dl","lw-relocation-paths");for(const [label,value]of [["Original location",row.original_path],["Current file",row.current_path]]){paths.append(el("dt","",label),el("dd","lw-file-path",value||"Not recorded"));}card.append(paths);
+        if(row.track_id)card.append(el("p","lw-status",`Rekordbox track ID: ${row.track_id}`));
+        if(row.verified_at)card.append(el("p","lw-status",`Checked XML: ${date(row.verified_at)}`));
+        if(row.evidence){const evidence=el("ul","lw-relocation-evidence");for(const [key,label]of [["same_track_id","Original track ID"],["cues_preserved","Existing cues"],["grid_preserved","Beatgrid"],["playlists_preserved","Playlist membership"]]){const value=row.evidence[key];evidence.append(el("li","",`${label}: ${value===true?"confirmed in XML":value===false?"not confirmed":"not available"}`));}card.append(evidence);}
+        if(row.current_path&&row.can_relocate){const copy=button("Copy new path","button button-tonal");copy.setAttribute("aria-label",`Copy new path for ${row.title||"renamed file"}`);copy.addEventListener("click",async()=>{try{await navigator.clipboard.writeText(row.current_path);toast("New file path copied. Paste it into Rekordbox’s Relocate file chooser.");}catch{const input=el("input");input.type="text";input.readOnly=true;input.value=row.current_path;input.setAttribute("aria-label","New file path — copy this text");card.append(input);input.focus();input.select();toast("Select and copy the file path shown below.");}});card.append(copy);}
+        entries.append(card);
+      }
+      if(!rows.length)entries.append(emptyState("No tracked renames in this view","Renames made in DJList appear here. Earlier changes need an XML record with the original track ID before their relocation can be verified."));
+      status.textContent="Verified means the refreshed XML has the same track ID, new location and preserved preparation data. Check playback in Rekordbox as well.";
+    }
+    verifyLocations.addEventListener("click",async()=>{if(state.busy)return;const request=++state.request;markBusy(true);fail();status.textContent="Reading fresh XML and comparing the original track ID, cues, beatgrid and playlists…";try{const result=await mutation("/api/rekordbox-relocation/verify");await refresh?.();if(request!==state.request||!state.active||state.section!=="relocation")return;state.page=1;render(result);}catch(e){if(request===state.request)fail(e.message);}finally{if(request===state.request){markBusy(false);verifyLocations.focus();}}});
     async function createFilePlan(action,options={}){
       if(state.busy||!state.selected.size)return;markBusy(true);fail();status.textContent="Checking selected files and building a change review…";
       try{const result=await mutation("/api/file-operations/preview",{action,entry_ids:[...state.selected.keys()],options});renderFilePlan(result,action);}catch(e){fail(e.message);}finally{markBusy(false);}
@@ -164,7 +193,7 @@
     function selectedReviewIds(container){return [...container.querySelectorAll("input[data-review-item]:checked")].map(input=>input.dataset.reviewItem);}
     function renderFilePlan(plan,action,undo=false){
       clearReview();state.plan=plan;review.hidden=false;const title=undo?"Review undo":action==="remove"?"Review files to move to Removed":"Review filenames";review.append(el("h2","",title));
-      review.append(el("p","lw-review-warning",action==="remove"&&!undo?"These files will move to a recoverable folder on the same drive. Choose each copy to remove. This does not free disk space or remove its Rekordbox entry.":"These changes affect actual filenames. Rekordbox paths are not updated; relocate affected tracks there and export fresh XML."));
+      review.append(el("p","lw-review-warning",action==="remove"&&!undo?"These files will move to a recoverable folder on the same drive. Choose each copy to remove. This does not free disk space or remove its Rekordbox entry.":"These changes affect actual filenames. Rekordbox locations then need updating. Use the Rekordbox locations tab for the old/new paths and verification after relocation."));
       for(const warning of plan.warnings||[])review.append(el("p","lw-review-warning",warning));
       const items=plan.items||plan.changes||[], choices=el("div","lw-review-items");
       for(const item of items){const row=el("label","lw-review-choice"), input=el("input");input.type="checkbox";input.dataset.reviewItem=String(item.entry_id||item.id||item.item_id||"");input.disabled=item.selectable===false||item.eligible===false||item.allowed===false||Boolean(item.error);const text=el("span");text.append(el("strong","",item.title||item.name||"File change"),el("span","lw-file-path",item.source||item.before||item.old_path||item.path||""),el("span","lw-history-arrow","→"),el("span","lw-file-path",item.target||item.after||item.new_path||item.proposed_path||""));
@@ -188,8 +217,8 @@
       if(!(section in SECTIONS))section="all";const changed=state.section!==section||!state.active;state.active=true;state.section=section;root.hidden=false;
       if(changed){state.player?.destroy();state.player=null;state.page=1;state.query="";search.value="";clearSelection();clearReview();}
       for(const [key,tab]of tabs){tab.classList.toggle("active",key===section);tab.setAttribute("aria-current",key===section?"page":"false");}
-      missingWrap.hidden=section!=="missing";form.hidden=section==="history";bulk.hidden=section==="history";pageNav.hidden=section==="history";
-      description.textContent={all:"Your scanned files and Rekordbox XML, together in one review.",duplicates:"Each group contains possible copies of the same recording. Compare versions, cues and file contents before selecting a copy.",missing:"Missing files and unavailable drives are separate. Reconnect an offline drive before treating its files as missing.",metadata:"Review likely artist, title, mix and featuring problems. Corrections stay in DJList until you choose a separate tag-writing workflow.",history:"Review previous file moves and renames, and undo selected changes."}[section];
+      missingWrap.hidden=section!=="missing";form.hidden=section==="history";bulk.hidden=["history","relocation"].includes(section);pageNav.hidden=section==="history";relocationHelp.hidden=section!=="relocation";report.hidden=section==="relocation";
+      description.textContent={all:"Your scanned files and Rekordbox XML, together in one review.",duplicates:"Each group contains possible copies of the same recording. Compare versions, cues and file contents before selecting a copy.",missing:"Missing files and unavailable drives are separate. Reconnect an offline drive before treating its files as missing.",metadata:"Review likely artist, title, mix and featuring problems. Corrections stay in DJList until you choose a separate tag-writing workflow.",relocation:"Track each rename through to a checked Rekordbox XML export. Renaming a file does not update its Rekordbox collection entry.",history:"Review previous file moves and renames, and undo selected changes."}[section];
       onSectionChange?.(section);load();return apiObject;
     }
     function close(){state.active=false;state.request++;root.hidden=true;markBusy(false);state.player?.destroy();state.player=null;clearSelection();clearReview();}

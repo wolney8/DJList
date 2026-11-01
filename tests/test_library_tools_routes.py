@@ -47,7 +47,7 @@ class LibraryToolRouteTests(unittest.TestCase):
 
     def test_new_read_routes_keep_host_and_origin_boundaries(self):
         for route in ("/api/backups", "/api/library-audit", "/api/library-audit.csv", "/api/activity",
-                      "/api/file-operations", "/api/cuegen/status", "/api/library-audio?entry_id=" + "a" * 24):
+                      "/api/file-operations", "/api/cuegen/status", "/api/rekordbox-relocation", "/api/library-audio?entry_id=" + "a" * 24):
             for invalid in ({"Host": "outside.example"}, {"Origin": "https://outside.example"}):
                 with self.subTest(route=route, invalid=invalid):
                     self.assertEqual(self.request(route, headers=invalid)[0], 403)
@@ -57,6 +57,7 @@ class LibraryToolRouteTests(unittest.TestCase):
                    "/api/duplicates/verify": {"group_id": "x"}, "/api/missing/preview": {"track_id": 1},
                    "/api/missing/apply": {"token": "x", "entry_id": "x"},
                    "/api/cues/plan": {"entry_id": "x"}, "/api/cues/export": {"token": "x", "selected_ids": []},
+                   "/api/cuegen/prepare": {}, "/api/rekordbox-relocation/verify": {},
                    "/api/file-operations/preview": {"action": "rename", "entry_ids": []},
                    "/api/file-operations/apply": {"token": "x", "selected_ids": []},
                    "/api/file-operations/undo-preview": {"operation_id": "x"},
@@ -122,6 +123,37 @@ class LibraryToolRouteTests(unittest.TestCase):
                 patch.object(Path, "is_dir", side_effect=AssertionError("Demo must not probe the music root")):
             state = self.app.state()
         self.assertFalse(state["drive"]["rekordbox_db_exists"])
+
+    def test_engine_preparation_requires_csrf_and_real_collection_before_any_install(self):
+        with patch.object(self.app.cuegen, "prepare_runtime") as prepare:
+            self.assertEqual(self.request("/api/cuegen/prepare", {}, {"X-CSRF-Token": "bad"})[0], 403)
+            prepare.assert_not_called()
+            self.app.store.put_settings({"mode": "demo"})
+            self.assertEqual(self.request("/api/cuegen/prepare", {})[0], 409)
+            prepare.assert_not_called()
+            self.app.store.put_settings({"mode": "real"})
+            prepare.return_value = {"installed": True, "runtime_check": "passed", "message": "Checked"}
+            status, _, body = self.request("/api/cuegen/prepare", {})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["runtime_check"], "passed")
+            prepare.assert_called_once_with(progress=self.app.cuegen_progress)
+
+    def test_rekordbox_relocation_checks_xml_and_reports_activity(self):
+        def checked():
+            active = self.app.activity.snapshot()["active"]
+            self.assertTrue(any("renamed tracks" in item["label"] for item in active))
+            return {"entries": [], "counts": {"total": 0}, "direct_database_write": False}
+        with patch.object(self.app.rekordbox_relocation, "verify", side_effect=checked) as verify:
+            self.assertEqual(self.request("/api/rekordbox-relocation/verify", {}, {"X-CSRF-Token": "bad"})[0], 403)
+            verify.assert_not_called()
+            status, _, body = self.request("/api/rekordbox-relocation/verify", {})
+            self.assertEqual(status, 200)
+            self.assertFalse(json.loads(body)["direct_database_write"])
+            self.assertEqual(self.app.activity.snapshot()["active"], [])
+            self.app.store.put_settings({"mode": "demo"})
+            self.assertEqual(self.request("/api/rekordbox-relocation")[0], 409)
+            self.assertEqual(self.request("/api/rekordbox-relocation/verify", {})[0], 409)
+            self.assertEqual(verify.call_count, 1)
 
 
 if __name__ == "__main__":

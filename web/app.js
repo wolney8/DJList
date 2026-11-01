@@ -920,7 +920,23 @@ function openSettings() {
   $("#native-picker-help").textContent = ui.data.capabilities?.native_picker ? "Browse opens a folder or file chooser on the computer running DJList. You can also paste a full path." : "Browse is available when DJList runs on a Mac. Paste the full folder or file path in this environment.";
   $("#path-picker-status").textContent = pickerUI.pending ? "A file chooser is still open on your Mac. Finish or cancel it before choosing another location." : "";
   showError("#settings-error", ""); $("#settings-dialog").showModal(); updateControls();
+  checkCueEngine(false);
 }
+let cueEngineRequest = 0;
+async function checkCueEngine(prepare) {
+  const request = ++cueEngineRequest, status = $("#settings-cuegen-status"), button = $("#settings-cuegen-prepare");
+  button.disabled = true;
+  status.textContent = prepare ? "Preparing and checking the cue engine. Follow its progress in Activity…" : "Checking the cue engine…";
+  try {
+    const result = prepare ? await mutation("/api/cuegen/prepare") : await api("/api/cuegen/status");
+    if (request !== cueEngineRequest) return;
+    status.textContent = result.message || "Cue engine checked. Create suggestions to test your selected track’s analysis.";
+    button.disabled = result.supported === false || ui.data?.mode !== "real";
+  } catch (error) {
+    if (request === cueEngineRequest) { status.textContent = error.message; button.disabled = ui.data?.mode !== "real"; }
+  }
+}
+$("#settings-cuegen-prepare").addEventListener("click", () => checkCueEngine(true));
 function openLibraryReview() { showLibraryWorkspace("all"); }
 function settingsValues() { return {cuegen_path: $("#cuegen-path").value.trim(), rekordbox_analysis_root: $("#analysis-root").value.trim(), spotify_client_id: $("#client-id").value.trim(), playlist_url: $("#playlist-url").value.trim(), music_root: $("#music-root").value.trim(), rekordbox_db: $("#rekordbox-db").value.trim(), rekordbox_xml: $("#rekordbox-xml").value.trim(), download_root: $("#download-root").value.trim(), auto_store_lookup: $("#auto-store-lookup").checked, auto_library_refresh: $("#auto-library-refresh").checked, rekordbox_backup_root: $("#rekordbox-backup-root").value.trim(), auto_rekordbox_backup: $("#auto-rekordbox-backup").checked}; }
 async function connectSpotify(button, saveSettings = false) {
@@ -1542,7 +1558,7 @@ function showWishlist(fromHash = false) {
   if (!fromHash && location.hash.startsWith("#library")) history.pushState(null, "", "#wishlist");
 }
 function routeWorkspace() {
-  const match = location.hash.match(/^#library(?:\/(all|duplicates|missing|metadata|history))?$/);
+  const match = location.hash.match(/^#library(?:\/(all|duplicates|missing|metadata|relocation|history))?$/);
   if (match) showLibraryWorkspace(match[1] || "all", true);
   else { showWishlist(true); if(ui.data) render(); }
 }

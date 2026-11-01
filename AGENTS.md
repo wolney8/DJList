@@ -36,13 +36,19 @@ Rekordbox library, annotations and audio files.
   Mac process/locking checks, bounded reads, stable source identity and checked
   copies in a separate destination; default to DJList's own data folder.
 - Never open a SQLite/SQLCipher connection to the live Rekordbox database,
-  recover/checkpoint its journals or write to it. An independently configured
-  CueGen 1.0.37 may open only an exclusive working copy of a freshly checked
+  recover/checkpoint its journals or write to it. The DJList-managed, pinned
+  CueGen 1.0.37 component may open only an exclusive working copy of a freshly checked
   retained snapshot, inside the mandatory macOS sandbox. Deny network access,
   source database access and source audio/analysis writes. Keep runtime caches
   inside the work directory and never run an unsandboxed fallback. Check exact
   version, selected track, bounded output and completion before accepting cues.
   A future direct record adapter still needs a separate compatibility review.
+- Prepare CueGen internally from a byte-verified existing copy or the pinned
+  official HTTPS release. Never execute an unknown binary to discover its
+  version. Retain provenance/licence notices, bound downloads and extraction,
+  install without overwriting existing files, and check startup in the mandatory
+  sandbox before declaring the component usable. A passed startup check does
+  not establish musical cue quality or a successful Rekordbox import.
 - Database snapshots are not full library backups. Keep existing snapshots,
   report incomplete copies and never add deletion, overwrite or restore behavior
   to the current workflow. Daily checks run only while DJList is open and
@@ -98,6 +104,12 @@ Rekordbox library, annotations and audio files.
   deletion. Retain a durable journal, safe rollback and reviewed undo. Show
   incomplete recovery honestly. Keep source XML/master.db unchanged and explain
   that Rekordbox locations need separate relocation after a rename.
+- Record original TrackID, cue/grid and playlist evidence before each rename.
+  Keep a persistent old/new path handoff and follow chained moves and undo.
+  Only a refreshed XML with the same unique TrackID, final path and retained
+  evidence may be labelled Verified in XML. Do not represent this handoff as
+  automatic live database relocation; database/ANLZ writes still need their
+  separate compatibility, full affected-file backup and restoration gates.
 - Distinguish zero XML cues from unknown or stale cue evidence for every copy.
   Do not automatically select a duplicate for removal based on cue counts.
 - Metadata corrections require reviewed before/after fields and a fresh token.

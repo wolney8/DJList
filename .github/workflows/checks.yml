@@ -44,3 +44,18 @@ jobs:
         run: node --test tests/test_ui_model.js tests/test_library_workspace_model.js
       - name: Mac launcher syntax
         run: bash -n Start_DJList.command
+  cuegen-macos:
+    name: Real CueGen engine on synthetic library
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install synthetic database fixture builder
+        run: brew install sqlcipher
+      - name: Run managed engine inside the production macOS sandbox
+        run: python tools/cuegen_runtime_smoke.py --sqlcipher "$(brew --prefix sqlcipher)/bin/sqlcipher"

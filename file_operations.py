@@ -24,6 +24,7 @@ import unicodedata
 from library_inventory import _identity, cue_evidence
 from metadata_review import fields as reviewed_fields
 from rekordbox_backups import check_rekordbox_closed
+from rekordbox_relocation import capture_evidence, ensure_tables as ensure_relocation_tables, record_file_changes
 from relocation import AUDIO_EXTENSIONS
 from spotify_api import AppError
 
@@ -56,7 +57,7 @@ def _same_content_identity(a, b):
 
 def _metadata_identity(entry):
     return {key: entry.get(key) for key in ("path", "title", "artist", "source", "cue_count", "identity_source",
-                                           "xml_cue_evidence", "xml_audio_fingerprint", "_reviewed_override")}
+                                           "xml_cue_evidence", "xml_audio_fingerprint", "xml_relocation_evidence", "_reviewed_override")}
 
 
 def _dir_identity(info):
@@ -185,6 +186,7 @@ class FileOperations:
         with self.store.connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS file_operations (
                 id TEXT PRIMARY KEY, created_at TEXT NOT NULL, metadata TEXT NOT NULL)""")
+            ensure_relocation_tables(db)
 
     def clear(self):
         with self.lock:
@@ -376,6 +378,7 @@ class FileOperations:
                               "artist": entry.get("artist", ""), "before": str(path), "after": str(target),
                               "cue_count": cues, "cue_evidence": evidence, "selectable": selectable, "warnings": warnings,
                               "_root": root, "_fingerprint": fingerprint, "_parent_identity": parent_identity,
+                              "_rekordbox_relocation": capture_evidence(entry, fingerprint, self.library._snapshot()),
                               "_metadata_identity": _metadata_identity(entry),
                               "_target_parent_identity": parent_identity if action == "rename" else None})
             destinations = {}
@@ -447,6 +450,7 @@ class FileOperations:
                               "before": before, "after": after, "cue_count": old.get("cue_count"),
                               "selectable": True, "warnings": ["Restore only the reviewed file to its original location.", WARNING],
                               "_root": root, "_fingerprint": fingerprint, "_parent_identity": parent_identity,
+                              "_rekordbox_relocation": capture_evidence({}, fingerprint, self.library._snapshot()),
                               "_target_parent_identity": target_parent_identity})
             if not items:
                 raise AppError("All files from this operation have already been restored.", 409)
@@ -621,6 +625,7 @@ class FileOperations:
                             db.execute("UPDATE file_operations SET metadata=? WHERE id=?", (json.dumps(old), old["id"]))
                         record.update(status="completed", completed_at=_now(), message=WARNING)
                         db.execute("UPDATE file_operations SET metadata=? WHERE id=?", (json.dumps(record), record["id"]))
+                        record_file_changes(db, record)
                     committed = True
                 self.library.invalidate()
                 return {"operation_id": record["id"], "action": plan["action"], "updated": len(items),

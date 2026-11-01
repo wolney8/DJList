@@ -4,7 +4,7 @@ Only DJList's own SQLite records are written. Audio tags/headers are read throug
 the bounded reader; audio and Rekordbox databases are never modified. XML and
 previously read tag snapshots survive missing media.
 """
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import difflib
 import hashlib
@@ -32,6 +32,63 @@ GENERIC_WORDS = {"the", "and", "with", "mix", "remix", "original", "extended", "
 MIME_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".aif": "audio/aiff", ".aiff": "audio/aiff",
               ".flac": "audio/flac", ".m4a": "audio/mp4", ".aac": "audio/aac", ".alac": "audio/mp4", ".ogg": "audio/ogg"}
 MAX_VISIBLE_MARKERS = 256
+MAX_RELOCATION_MARKERS = 4096
+
+
+def _relocation_evidence(document, items):
+    """Bounded XML identity and preparation evidence for later path checks.
+
+    Track IDs are needed to distinguish a relocated record from a newly imported
+    duplicate. Hash every exported cue/grid attribute, not just the visible cue
+    count. Playlist membership is evidence from this export, never a live-DB
+    claim. Unsupported playlist keys make that evidence explicitly incomplete.
+    """
+    ids = Counter(item.get("TrackID", "") for item in items)
+    locations = Counter(_location(item.get("Location")) for item in items)
+    memberships = defaultdict(list)
+    playlists = document.find("PLAYLISTS")
+    complete = playlists is not None
+    pending = [(node, []) for node in list(playlists)] if playlists is not None else []
+    visited = 0
+    while pending:
+        node, parents = pending.pop()
+        visited += 1
+        if visited > MAX_ENTRIES * 4:
+            complete = False
+            break
+        names = parents + [_text(node.get("Name"), 255)]
+        if node.tag != "NODE":
+            complete = False
+            continue
+        if node.get("Type") == "0":
+            pending.extend((child, names) for child in node)
+        elif node.get("Type") == "1" and node.get("KeyType", "0") == "0":
+            for child in node:
+                if child.tag != "TRACK" or not child.get("Key"):
+                    complete = False
+                    continue
+                memberships[child.get("Key")].append(json.dumps(names, ensure_ascii=False))
+        else:
+            complete = False
+
+    def signatures(values):
+        return sorted(hashlib.sha256(json.dumps(dict(value.attrib), sort_keys=True,
+                      ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+                      for value in values[:MAX_RELOCATION_MARKERS])
+
+    result = {}
+    for item in items:
+        track_id = item.get("TrackID", "")
+        valid_id = bool(re.fullmatch(r"[0-9]{1,20}", track_id))
+        marks, tempos = item.findall("POSITION_MARK"), item.findall("TEMPO")
+        result[id(item)] = {"track_id": track_id if valid_id else "",
+                            "unique_track_id": valid_id and ids[track_id] == 1,
+                            "unique_location": locations[_location(item.get("Location"))] == 1,
+                            "markers": signatures(marks), "grid": signatures(tempos),
+                            "playlists": sorted(memberships.get(track_id, [])),
+                            "playlists_complete": complete,
+                            "complete": len(marks) <= MAX_RELOCATION_MARKERS and len(tempos) <= MAX_RELOCATION_MARKERS}
+    return result
 
 
 def _time_value(value):
@@ -468,6 +525,7 @@ class LibraryInventory:
             raise AppError("The XML collection count does not match its contents. Export it again.")
         raw_root, root = _roots(music_root)
         entries, hydrated, skipped, duplicate_locations = {}, [], 0, 0
+        relocation_evidence = _relocation_evidence(document, items)
         refreshed_at = _now()
         for item in items:
             path = _location(item.get("Location"))
@@ -486,6 +544,7 @@ class LibraryInventory:
                      "genre": _text(item.get("Genre"), 200), "duration_ms": _duration(item.get("TotalTime"), seconds=True),
                      "cue_count": len(item.findall("POSITION_MARK")), "source": "rekordbox_xml",
                      "xml_cue_evidence": _xml_cues(item), "xml_refreshed_at": refreshed_at,
+                     "xml_relocation_evidence": relocation_evidence[id(item)],
                      "xml_audio_fingerprint": info["fingerprint"] if info["available"] and info["within_root"] else None,
                      "identity_source": "rekordbox_xml" if _text(item.get("Name")) and _text(item.get("Artist")) else "filename"}
             entries[path] = entry
@@ -495,7 +554,9 @@ class LibraryInventory:
             raise AppError("This XML contains no usable local audio paths. The previous inventory was kept.")
         snapshot = {"source_name": source_name, "source_path": source_path, "refreshed_at": refreshed_at,
                     "entry_count": len(entries), "skipped": skipped, "duplicate_locations": duplicate_locations,
-                    "source_fingerprint": source_fingerprint}
+                    "source_fingerprint": source_fingerprint,
+                    "content_sha256": hashlib.sha256(xml.encode("utf-8")).hexdigest(),
+                    "imported_at": datetime.now(timezone.utc).isoformat(timespec="microseconds")}
         with self._lock, self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = {row[0] for row in db.execute("SELECT path FROM library_entries")}

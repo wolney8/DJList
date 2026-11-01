@@ -551,19 +551,34 @@ library backup and try one reviewed track on your actual Rekordbox version.
 Check that its original cues, loops and beatgrid remain correct. Import behavior
 and compatibility on your Mac remain unverified.
 
-### Optional CueGen suggestions
+### Built-in CueGen suggestions
 
-DJList can use an externally installed **CueGen 1.0.37** executable on macOS.
-In Settings, select that executable, the active `master.db`, and the Rekordbox
-analysis share folder. If no analysis folder is saved, the adapter expects
-`share` beside the selected database. No executable is bundled or automatically
-downloaded. An incompatible version or unavailable macOS sandbox blocks the run.
+**Unreleased maintenance work; the application remains 0.7.0 / API 7.**
+DJList prepares and runs **CueGen 1.0.37** internally on macOS. You do not need
+to launch CueGen separately or enter a command. First use checks for an exact
+supported copy in Downloads or the optional advanced saved path. Otherwise it
+downloads the pinned official component, verifies its archive/executable hashes
+and installs it in DJList's own data folder without overwriting existing files.
+Unknown versions are not executed. The executable is not included in Git.
 
-Choose **CueGen phrases / Mixed In Key** as the cue suggestion engine. Select
+In Settings, choose **Check cue engine** to prepare it and run the protected
+startup test. Select the active `master.db` and save its analysis share folder
+if needed. A blank analysis field uses `share` beside that exact database; there
+is no fallback to an unrelated internal collection. An unavailable macOS sandbox
+blocks execution. The upstream component is Intel x64; Apple Silicon needs an
+already working Rosetta environment. DJList does not install Rosetta or reduce
+macOS security settings.
+
+**CueGen phrases / Mixed In Key** is the default suggestion engine. Select
 existing Rekordbox phrase analysis or Mixed In Key cue data, hot or memory
 cues, count, spacing and optional timing, colours, names or loop settings.
 This uses analysis that already exists; it does not create phrase analysis from
 unanalysed audio.
+
+The initial preset uses Rekordbox phrases, up to eight hot cues and four-bar
+spacing. Downloads, startup checks, snapshot preparation and generation are
+shown in Activity. **Installed** and **startup check passed** are distinct;
+neither claims that the user's analysis or Rekordbox XML import has been tested.
 
 Each run checks that library-writing tools are closed, creates or rechecks a
 database snapshot, and makes a separate disposable working copy. CueGen receives
@@ -584,6 +599,26 @@ Real CueGen execution, sandbox/runtime compatibility and the resulting XML
 import still need verification on the user's Mac. See the
 [open-source tools assessment](docs/OPEN_SOURCE_DJ_TOOLS.md) and
 [third-party notices](THIRD_PARTY_NOTICES.md) for integration and licence details.
+
+### Rekordbox locations after renaming
+
+**My library → Rekordbox locations** keeps the original and current path for
+each DJList rename, including successive renames and undo. It records the
+original unique TrackID and exported cue, grid and playlist evidence when these
+were available before the change. Older changes without that baseline stay
+**Needs review**.
+
+Use Rekordbox's **File → Display All Missing Files → Relocate** for the selected
+existing entry. **Copy new path** gives the exact target; in the Mac file chooser,
+Command–Shift–G accepts that path. Export fresh collection XML to the saved
+location, then choose **Check fresh Rekordbox XML**. A **Verified in XML** result
+requires the same original track ID at the new location with the earlier
+preparation data retained. Check playback in Rekordbox as well.
+
+This is a verified handoff, **not an automatic database update**. A direct writer
+must also handle ANLZ path tags and database update bookkeeping; current raw
+database snapshots do not cover all affected analysis files. No live writer is
+enabled. See [relocation scope and remaining gates](docs/REKORDBOX_RELOCATION.md).
 
 ## Privacy and operation
 

@@ -22,6 +22,7 @@ import threading
 import time
 
 from cue_planner import CuePlannerError, _integer
+from cuegen_runtime import CueGenRuntime
 from rekordbox_backups import (MAX_DATABASE_BYTES, _absolute, _directory,
                                _directory_current, _fingerprint, _identity,
                                check_rekordbox_closed)
@@ -87,6 +88,11 @@ def validate_options(value):
     order = [part.strip() for group in result["phrase_order"].split(",") for part in group.split("/")]
     if len(order) != 7 or {part.casefold() for part in order} != {"intro", "verse", "bridge", "chorus", "outro", "up", "down"}:
         raise _error("Phrase priority must include Intro, Verse, Bridge, Chorus, Outro, Up and Down once each.", "invalid_options", 400)
+    # Upstream's phrase-order parser compares untrimmed names. Normalise
+    # human-friendly spaces before passing separate, validated argv values.
+    result["phrase_names"] = ",".join(part.strip() for part in names)
+    result["phrase_order"] = ",".join("/".join(part.strip() for part in group.split("/"))
+                                        for group in result["phrase_order"].split(","))
     return result
 
 
@@ -109,23 +115,53 @@ def _arguments(executable, database, path, options):
     return args
 
 
+def _sandbox_base(work, executable):
+    quote = lambda value: json.dumps(str(value), ensure_ascii=False)
+    # .NET's self-contained executable extracts native libraries into bundle.
+    # Executable mappings need their own explicit allow under deny-default.
+    # macOS dyld system libraries may be supplied through its Cryptex paths.
+    system = ("/System/Library", "/usr/lib", "/usr/share", "/private/var/db/dyld",
+              "/System/Cryptexes/App", "/System/Cryptexes/OS",
+              "/System/Volumes/Preboot/Cryptexes/App/System", "/System/Volumes/Preboot/Cryptexes/OS")
+    reads = " ".join("(subpath " + quote(path) + ")" for path in (work, *system))
+    executable_maps = " ".join("(subpath " + quote(path) + ")" for path in (work / "bundle", *system))
+    literals = " ".join("(literal " + quote(path) + ")" for path in
+                        (executable, "/dev/urandom", "/dev/random", "/dev/null", "/private/etc/localtime"))
+    return [
+        "(version 1)", "(deny default)", "(deny network*)",
+        "(allow process-fork)", "(allow process-exec (literal " + quote(executable) + "))",
+        "(allow signal (target self))",
+        "(allow sysctl-read)", "(allow mach-lookup)", "(allow file-read-metadata)",
+        "(allow file-read-data " + reads + " " + literals + ")",
+        "(allow file-map-executable (literal " + quote(executable) + ") " + executable_maps + ")",
+        "(allow file-write* (subpath " + quote(work) + "))",
+        '(allow file-write-data (literal "/dev/null"))',
+    ]
+
+
+def probe_sandbox_profile(work, executable):
+    """Runtime-only probe; no audio, analysis or database paths are allowed."""
+    return "\n".join(_sandbox_base(work, executable))
+
+
 def sandbox_profile(work, executable, audio, analysis, source):
     quote = lambda value: json.dumps(str(value), ensure_ascii=False)
     # The analysis link in work/share is read-only after canonical resolution.
     # Explicit source denials also protect cases where broad paths overlap.
-    reads = " ".join("(subpath " + quote(path) + ")" for path in
-                     (work, analysis, "/System/Library", "/usr/lib", "/usr/share", "/private/var/db/dyld"))
-    literals = " ".join("(literal " + quote(path) + ")" for path in
-                        (executable, audio, "/dev/urandom", "/dev/random", "/dev/null", "/private/etc/localtime"))
-    return "\n".join([
-        "(version 1)", "(deny default)", "(deny network*)",
-        "(allow process-fork)", "(allow process-exec (literal " + quote(executable) + "))",
-        "(allow sysctl-read)", "(allow mach-lookup)", "(allow file-read-metadata)",
-        "(allow file-read-data " + reads + " " + literals + ")",
-        "(allow file-write* (subpath " + quote(work) + "))",
+    return "\n".join(_sandbox_base(work, executable) + [
+        "(allow file-read-data (subpath " + quote(analysis) + ") (literal " + quote(audio) + "))",
         "(deny file-write* (subpath " + quote(source.parent) + ") (subpath " + quote(analysis) + ") (literal " + quote(audio) + "))",
         "(deny file-read-data (literal " + quote(source) + "))",
     ])
+
+
+def runtime_environment(work):
+    return {"HOME": str(work / "home"), "TMPDIR": str(work / "tmp") + "/",
+            "DOTNET_BUNDLE_EXTRACT_BASE_DIR": str(work / "bundle"),
+            "DOTNET_CLI_HOME": str(work / "home"), "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
+            "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_EnableDiagnostics": "0",
+            "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT": "1", "PATH": "/usr/bin:/bin",
+            "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8", "TERM": "dumb", "NO_COLOR": "1"}
 
 
 def run_bounded(argv, *, cwd, env, timeout=RUN_SECONDS, output_limit=MAX_OUTPUT_BYTES):
@@ -239,12 +275,15 @@ def parse_proposals(result, source, options):
 
 class CueGenBridge:
     def __init__(self, store, backups, planner, runner=None, process_checker=None,
-                 platform=None, sandbox_path="/usr/bin/sandbox-exec"):
+                 platform=None, sandbox_path="/usr/bin/sandbox-exec", runtime=None):
         self.store, self.backups, self.planner = store, backups, planner
         self.platform = platform or sys.platform
         self.runner = runner or run_bounded
         self.process_checker = process_checker or (lambda: check_rekordbox_closed(self.platform))
         self.sandbox_path = sandbox_path
+        self.runtime = runtime or CueGenRuntime(store, platform=self.platform)
+        self._runtime_check = None
+        self._runtime_issue = None
         self._lock = threading.Lock()
 
     def _supported(self):
@@ -257,15 +296,75 @@ class CueGenBridge:
     def status(self):
         settings = self.store.settings()
         real = settings.get("mode", "real") == "real"
-        configured = bool(settings.get("cuegen_path")) and real
+        component = self.runtime.status()
+        configured = component.get("installed", False) and real
         supported = self._supported()
         message = ("CueGen is paused in the demo." if not real else
                    "CueGen review requires macOS and its sandbox-exec protection. No unsandboxed fallback is available." if not supported else
-                   "Choose the installed CueGen 1.0.37 executable in Settings." if not configured else
-                   "CueGen is configured. Its version is checked during a reviewed run on an isolated database copy.")
-        return {"configured": configured, "supported": supported, "message": message,
-                "required_version": SUPPORTED_VERSION, "version": None,
+                   self._runtime_issue or component["message"])
+        checked = False
+        if configured and supported and self._runtime_check:
+            try:
+                executable = self.runtime.verified_path()
+                with _directory(executable.parent) as parent:
+                    checked = self._runtime_check == _fingerprint(os.stat(executable.name, dir_fd=parent, follow_symlinks=False))
+            except (OSError, AppError):
+                pass
+        if checked and not self._runtime_issue:
+            message = "Cue engine is installed and its protected startup check passed. Cue suggestions run inside DJList."
+        return {**component, "configured": configured, "supported": supported and real, "message": message,
+                "required_version": SUPPORTED_VERSION, "version": SUPPORTED_VERSION if checked else None,
+                "runtime_check": "passed" if checked else "failed" if self._runtime_issue else "not_checked",
                 "live_database_writes": False, "engine": "cuegen"}
+
+    def prepare_runtime(self, progress=None):
+        """One in-app setup/check, with no database or audio access."""
+        if not self._lock.acquire(blocking=False):
+            raise _error("CueGen is already preparing a review or engine check. Check Activity.", "cuegen_busy")
+        try:
+            self._prepare_runtime(progress)
+            return self.status()
+        finally:
+            self._lock.release()
+
+    def _prepare_runtime(self, progress=None):
+        if self.store.settings().get("mode", "real") != "real":
+            raise _error("Leave the demo before preparing the cue engine.", "demo_mode")
+        if not self._supported():
+            raise _error("CueGen requires macOS sandbox-exec. This app never falls back to an unsandboxed run.")
+        try:
+            self.runtime.prepare(progress)
+            executable = self.runtime.verified_path(force=True)
+            with _directory(executable.parent) as parent:
+                fingerprint = _fingerprint(os.stat(executable.name, dir_fd=parent, follow_symlinks=False))
+            if self._runtime_check == fingerprint:
+                return executable
+            self._runtime_check = None
+            if progress:
+                progress("Checking protected cue-engine startup", None, None)
+            with self._workspace(None) as work:
+                argv = [self.sandbox_path, "-p", probe_sandbox_profile(work, executable), str(executable), "--help"]
+                result = self.runner(argv, cwd=work, env=runtime_environment(work), timeout=30, output_limit=64 * 1024)
+            output = result.get("output") if isinstance(result, dict) else None
+            if (not isinstance(result, dict) or result.get("returncode") != 0 or not isinstance(output, str)
+                    or len(output.encode("utf-8")) > 64 * 1024
+                    or re.findall(r"^Version ([0-9.]+)\s*$", output, re.M) not in ([SUPPORTED_VERSION], [SUPPORTED_VERSION + ".0"])
+                    or "Usage: CueGen.Console [OPTION]..." not in output):
+                raise _error("The installed cue engine did not pass its protected startup check. On Apple Silicon, check that Rosetta is already available. DJList did not access your Rekordbox database.", "cuegen_runtime")
+            self.runtime.verified_path(force=True)
+            with _directory(executable.parent) as parent:
+                if _fingerprint(os.stat(executable.name, dir_fd=parent, follow_symlinks=False)) != fingerprint:
+                    raise _error("The cue engine changed during its startup check.", "cuegen_checksum")
+            self._runtime_check = fingerprint
+            self._runtime_issue = None
+            return executable
+        except (AppError, OSError) as error:
+            self._runtime_check = None
+            self._runtime_issue = (str(error) if isinstance(error, AppError) else
+                                   "The cue engine could not start inside the required macOS sandbox. Your database was not accessed.")
+            if isinstance(error, AppError):
+                raise
+            raise _error(self._runtime_issue, "cuegen_runtime") from None
 
     @staticmethod
     def _configuration(settings):
@@ -282,7 +381,7 @@ class CueGenBridge:
         source = _absolute(settings.get("rekordbox_db"), "the active Rekordbox master.db")
         if source.name != "master.db":
             raise _error("Select the actual active master.db in Settings.")
-        executable = _absolute(settings.get("cuegen_path"), "the installed CueGen executable")
+        executable = self.runtime.verified_path(force=True)
         analysis = _absolute(settings.get("rekordbox_analysis_root") or str(source.parent / "share"), "the Rekordbox analysis share folder")
         if source == analysis or analysis in source.parents:
             raise _error("Choose the analysis share folder, not a folder containing master.db.")
@@ -318,7 +417,7 @@ class CueGenBridge:
     @contextmanager
     def _workspace(self, context):
         root = self.store.directory / "cuegen-work"
-        if context["source"].parent in root.parents or root == context["source"].parent:
+        if context is not None and (context["source"].parent in root.parents or root == context["source"].parent):
             raise _error("DJList's working folder must be separate from the Rekordbox database folder.")
         with _directory(root, create=True) as parent:
             name = "review-" + secrets.token_hex(12)
@@ -329,7 +428,8 @@ class CueGenBridge:
             try:
                 for sub in ("home", "tmp", "bundle"):
                     (work / sub).mkdir(mode=0o700)
-                os.symlink(context["analysis"], work / "share", target_is_directory=True)
+                if context is not None:
+                    os.symlink(context["analysis"], work / "share", target_is_directory=True)
                 _directory_current(root, parent)
                 yield work
             finally:
@@ -419,7 +519,7 @@ class CueGenBridge:
                 os.close(descriptor)
         return work / "master.db"
 
-    def plan(self, entry_id, options):
+    def plan(self, entry_id, options, progress=None):
         options = validate_options(options)
         if not self._lock.acquire(blocking=False):
             raise _error("CueGen is already preparing a review. Wait for it to finish.", "cuegen_busy")
@@ -435,7 +535,10 @@ class CueGenBridge:
                     or not re.fullmatch(r"[0-9]{1,20}", source["track"].get("TrackID", ""))):
                 raise _error("This track's path or XML identifier cannot be matched safely to one CueGen database record.", "cuegen_track_mismatch")
             self._closed()
+            self._prepare_runtime(progress)
             context = self._capture(settings)
+            if progress:
+                progress("Checking the database backup", None, None)
             backup = self.backups.create(reason="manual")["backup"]
             if (backup.get("source_path") != str(context["source"])
                     or backup.get("source_fingerprint") != context["source_fp"]):
@@ -445,15 +548,12 @@ class CueGenBridge:
                 database = self._copy_snapshot(backup, work)
                 profile = sandbox_profile(work, context["executable"], path, context["analysis"], context["source"])
                 args = [self.sandbox_path, "-p", profile] + _arguments(context["executable"], database, path, options)
-                env = {"HOME": str(work / "home"), "TMPDIR": str(work / "tmp") + "/",
-                       "DOTNET_BUNDLE_EXTRACT_BASE_DIR": str(work / "bundle"),
-                       "DOTNET_CLI_HOME": str(work / "home"), "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
-                       "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_EnableDiagnostics": "0",
-                       "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT": "1", "PATH": "/usr/bin:/bin",
-                       "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8", "TERM": "dumb", "NO_COLOR": "1"}
+                env = runtime_environment(work)
                 self._validate(context)
                 self.planner._revalidate(source)
                 self._closed()
+                if progress:
+                    progress("Creating cue suggestions from existing analysis", None, None)
                 result = self.runner(args, cwd=work, env=env, timeout=RUN_SECONDS, output_limit=MAX_OUTPUT_BYTES)
                 proposals, warnings = parse_proposals(result, source, options)
                 warnings.append("The database working copy is checked separately from the analysis files. Analysis is read-only, but another application could change it during this run; this is not an atomic snapshot of both. Close analysis tools and review the markers against the audio.")

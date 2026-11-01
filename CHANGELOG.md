@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased maintenance — version remains 0.7.0 / API 7
+
+- Prepare and run the pinned CueGen engine internally, reusing only verified
+  existing bytes or downloading the official fixed release. Add a protected
+  startup check, first-use provisioning and visible activity; no separate launch
+  or manual command is required. Keep source database/audio writes blocked.
+- Add a real macOS engine check using a synthetic encrypted database and
+  generated beat/phrase analysis; fixture execution is distinct from a real
+  Rekordbox import or the user's installation.
+- Add Rekordbox locations to the library workspace. Track rename chains and
+  undo, show exact old/new paths, and verify a fresh XML against original
+  TrackID/cue/grid/playlist evidence. Actual relocation still uses Rekordbox's
+  Relocate action; no live database/ANLZ writer is enabled.
+- Preserve the existing released version and API number. This working branch
+  is not a new packaged release or an installation on the user's Mac.
+
 ## 0.7.0 — 31 October 2026
 
 - Advance the local interface/API contract to **API 7**.

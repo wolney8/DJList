@@ -1,6 +1,6 @@
 # Third-party notices
 
-## CueGen colour palette and optional external adapter
+## CueGen colour palette and managed internal component
 
 DJList 0.7.0 adapts the hot-cue and memory-cue RGB lookup tables from
 **CueGen**, copyright **(c) 2021 Michael Ganss**, under the **MIT licence**.
@@ -17,9 +17,14 @@ Retrieved and checked **31 October 2026**. The complete upstream copyright and
 permission notice is retained in [`vendor/cuegen/LICENSE`](vendor/cuegen/LICENSE).
 Distributions of this palette must retain that notice.
 
-The optional adapter invokes a separately installed **CueGen 1.0.37** executable
-selected by the user. DJList does not redistribute that executable, its runtime,
-dependencies or analysis data. The adapter uses a disposable database copy,
+The internal adapter prepares the official **CueGen 1.0.37** macOS component
+from the fixed upstream release URL in `cuegen_runtime.py`, or imports an
+existing byte-identical copy. Source and binary SHA256 pins are recorded there.
+The upstream archive has no independent publisher checksum/signature; our
+fixed checksums detect changed bytes and do not claim publisher attestation.
+The executable/runtime is downloaded from upstream on first use rather than
+redistributed in this Git repository. The upstream software and dependency
+licences continue to apply. The adapter uses a disposable database copy,
 mandatory macOS sandbox and bounded one-track output; it does not grant rights
 to recordings or analysis from other products. Actual binary/runtime
 compatibility and Rekordbox import are separate verification requirements.
