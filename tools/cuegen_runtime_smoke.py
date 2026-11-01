@@ -14,12 +14,16 @@ sandbox, output parser and XML export are real, not mocked.
 """
 import argparse
 import hashlib
+import json
+import os
 from pathlib import Path
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import wave
 import xml.etree.ElementTree as ET
 
@@ -108,6 +112,62 @@ def _hashes(paths):
     return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
 
 
+def _ci_native_diagnostics(started_at):
+    """Bounded CI-only evidence for native launch failures; no policy changes.
+
+    Read only newly created CueGen reports from this disposable CI machine.
+    Never inspect the user's existing crash reports when they run this script.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    try:
+        result = run_bounded([
+            "/usr/bin/log", "show", "--last", "2m", "--style", "compact",
+            "--predicate", 'eventMessage CONTAINS[c] "CueGen.Console" OR '
+            '(process == "sandboxd" AND eventMessage CONTAINS[c] "deny")',
+        ], cwd=Path.cwd(), env=dict(os.environ), timeout=15, output_limit=128 * 1024)
+        print("CI sandbox/loader diagnostics:", result["returncode"])
+        print(result["output"][-16000:])
+    except Exception as error:
+        print("CI unified-log diagnostics unavailable:", str(error))
+    # ReportCrash can write its file shortly after the child has been reaped.
+    time.sleep(2)
+    reports = []
+    for directory in (Path.home() / "Library/Logs/DiagnosticReports",
+                      Path("/Library/Logs/DiagnosticReports")):
+        try:
+            for path in directory.glob("CueGen*"):
+                info = path.lstat()
+                if (stat.S_ISREG(info.st_mode) and info.st_mtime >= started_at
+                        and info.st_size <= 512 * 1024):
+                    reports.append((info.st_mtime, path))
+        except OSError:
+            continue
+    for _, path in sorted(reports, reverse=True)[:2]:
+        try:
+            content = path.read_text(errors="replace")
+            print("CI new CueGen diagnostic report:", path.name)
+            if path.suffix == ".ips":
+                decoder = json.JSONDecoder()
+                header, end = decoder.raw_decode(content)
+                report = json.loads(content[end:].strip())
+                selected = {key: report.get(key) for key in
+                            ("procName", "procPath", "osVersion", "exception",
+                             "termination", "asi", "faultingThread")}
+                thread = report.get("faultingThread")
+                threads = report.get("threads", [])
+                if isinstance(thread, int) and 0 <= thread < len(threads):
+                    selected["faultingFrames"] = threads[thread].get("frames", [])[:20]
+                    image_ids = {frame.get("imageIndex") for frame in selected["faultingFrames"]}
+                    selected["usedImages"] = {str(index): value for index, value in
+                                              enumerate(report.get("usedImages", [])) if index in image_ids}
+                print(json.dumps({"header": header, "report": selected}, ensure_ascii=False)[:20000])
+            else:
+                print(content[:16000])
+        except (OSError, ValueError, TypeError) as error:
+            print("CI crash report could not be read:", str(error))
+
+
 def run(sqlcipher):
     if sys.platform != "darwin":
         raise RuntimeError("This check requires a real macOS runner and sandbox-exec; there is no unsandboxed fallback.")
@@ -166,6 +226,7 @@ def run(sqlcipher):
 
         bridge = CueGenBridge(store, backups, planner, process_checker=closed_fixture_tools,
                               runner=recorded_real_runner)
+        started_at = time.time()
         try:
             prepared = bridge.prepare_runtime()
             print("Actual sandboxed CueGen runtime check:", prepared)
@@ -196,6 +257,7 @@ def run(sqlcipher):
             for result in engine_results[-2:]:
                 print("Real fixture engine return code:", result["returncode"])
                 print(result["output"][-8000:])
+            _ci_native_diagnostics(started_at)
             raise
         finally:
             backups.close()
