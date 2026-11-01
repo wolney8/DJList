@@ -7,7 +7,7 @@ external SSD or live master.db was available in this environment.
 
 The previous record is preserved in [VERIFICATION_V06.md](docs/VERIFICATION_V06.md).
 
-## Unreleased maintenance work
+## Unreleased maintenance work — 1 November 2026
 
 Branch: `work/internal-cuegen-relocation`. The application and API remain
 **0.7.0 / 7**; no new release or user installation is claimed. The original
@@ -18,8 +18,8 @@ Branch: `work/internal-cuegen-relocation`. The application and API remain
   relocation evidence. JavaScript helper/syntax and whitespace checks pass.
 - The existing synthetic localhost HTTP workflow passes after the integration.
 - **Actual CueGen passes on an Intel Mac runner** in
-  [run 41290278365](https://github.com/wolney8/DJList/actions/runs/41290278365)
-  at `b261acf2297717f8035cd2bb714f7d38b108a683`. The ordinary Linux/macOS jobs
+  [run 41290460368](https://github.com/wolney8/DJList/actions/runs/41290460368)
+  at `cc102b5815f4d0485e142b183578d25e02fda236`. The ordinary Linux/macOS jobs
   also pass. Native testing exposed and fixed two real defects: a missing
   literal-root read needed by the macOS loader, and the pinned executable's
   quoted/full-level log format differing from the earlier mock fixture.
@@ -28,8 +28,11 @@ Branch: `work/internal-cuegen-relocation`. The application and API remain
   plus two audio/analysis records. The passing run verifies Intro/Chorus/Outro
   at 0/32/64 seconds, exact selected-track scope, retained existing XML cues/grid,
   unchanged source hashes and a checked backup. Only the closed-library process
-  result is injected. Follow-up native cases for existing B/H hot cues and a
-  memory-cue fallback are in the harness but still await their own passing run.
+  result is injected. Three actual-engine scenarios pass: no existing hot cues
+  produces A/B/C; an existing B is preserved while C/D/E are generated; existing
+  B/H produces the upstream invalid-slot condition, which DJList rejects with
+  clear guidance, followed by a successful memory-cue review/export. Every case
+  preserves its original memory/hot cues, grid, metadata and source hashes.
 - New UI source wiring and script syntax were checked. The cloud preview could
   not be visually exercised because its error tab was blocked by the browser
   URL policy; no browser-policy workaround was attempted. The earlier 0.7

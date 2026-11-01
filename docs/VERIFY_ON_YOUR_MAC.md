@@ -16,8 +16,8 @@ replacement when the SSD is unavailable.
 Close Rekordbox and other library editors. Open **Rekordbox backups → Back up
 now**. Pass: the correct database path appears and the saved copy says
 **File contents checked**. Use **Check backup** on that copy once. This proves
-its saved bytes match; it does not prove a full library restore. Keep Rekordbox's own full library backup
-before importing cues or reorganising music.
+its saved bytes match; it does not prove a full library restore. Keep Rekordbox's
+own full library backup before importing cues or reorganising music.
 
 ## 2. Try ordinary features with a few test copies
 
@@ -43,7 +43,11 @@ that view was already open.
 Pass: the drive is unavailable/offline, ownership and saved XML remain, and
 reconnecting restores availability. Do not unplug a drive during a write.
 
-## 3. Check cue generation and relocation after their maintenance work is verified
+## 3. Maintenance-only checks: cue generation and relocation
+
+**Check cue engine** and **Rekordbox locations** are on the maintenance branch;
+they are absent from the published 0.7.0 download. Use this section only after
+that maintenance code has been installed on your Mac.
 
 For the internal cue engine, **Settings → Check cue engine** must report a
 passed protected startup check. There is no separate CueGen launch or command.
@@ -52,8 +56,8 @@ An installed component with a failed startup check is not a passing result.
 Use one analysed test copy already imported into Rekordbox, with phrase
 analysis, a checked beatgrid, no existing hot cues and a fresh XML export.
 You can keep a memory cue to check that it is preserved. Close Rekordbox.
-In **Plan cues**, use phrases, eight hot cues and
-four-bar spacing. Listen around a few suggestions, export only those selected,
+In **Plan cues**, use phrases, eight hot cues and four-bar spacing. Listen
+around a few suggestions, export only those selected,
 then import only that test track in Rekordbox. Pass: it plays from the expected
 file, the selected new cues are sensible, and its earlier cues/grid remain.
 For an already cued track, choose **Memory cues** if the engine reports no
