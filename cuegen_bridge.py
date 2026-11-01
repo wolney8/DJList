@@ -122,7 +122,11 @@ def _sandbox_base(work, executable):
     # macOS dyld system libraries may be supplied through its Cryptex paths.
     # dyld's ignition bootstrap opens the root directory before locating those
     # caches. Permit that inode only, never a read grant to the whole tree.
+    # The pinned component is Intel-only. Rosetta loads its OS-owned runtime
+    # from this separate directory on Apple Silicon; /System/Library alone
+    # does not cover it. The AOT cache needs executable mappings, not writes.
     system = ("/System/Library", "/usr/lib", "/usr/share", "/private/var/db/dyld",
+              "/Library/Apple/usr/libexec/oah",
               "/System/Cryptexes/App", "/System/Cryptexes/OS",
               "/System/Volumes/Preboot/Cryptexes/App/System", "/System/Volumes/Preboot/Cryptexes/OS")
     reads = " ".join("(subpath " + quote(path) + ")" for path in (work, *system))
@@ -137,6 +141,7 @@ def _sandbox_base(work, executable):
         '(allow file-read-data (literal "/"))',
         "(allow file-read-data " + reads + " " + literals + ")",
         "(allow file-map-executable (literal " + quote(executable) + ") " + executable_maps + ")",
+        '(allow file-map-executable (subpath "/private/var/db/oah"))',
         "(allow file-write* (subpath " + quote(work) + "))",
         '(allow file-write-data (literal "/dev/null"))',
     ]
@@ -203,6 +208,54 @@ def run_bounded(argv, *, cwd, env, timeout=RUN_SECONDS, output_limit=MAX_OUTPUT_
             pass
         process.wait(timeout=5)
         process.stdout.close()
+
+
+def intel_execution_status():
+    """Check the OS's Intel support with a fixed Apple utility, never CueGen.
+
+    A native process's sysctl.proc_translated value or a package receipt does
+    not prove that Rosetta is available. This probe neither installs it nor
+    reads the collection; failure means unavailable/failed, not proven absent.
+    """
+    if sys.platform != "darwin":
+        return "unknown"
+    try:
+        result = run_bounded(["/usr/bin/arch", "-x86_64", "/usr/bin/uname", "-m"],
+                             cwd=Path("/"), env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+                             timeout=5, output_limit=4096)
+        return "available" if result["returncode"] == 0 and result["output"].strip() == "x86_64" else "unavailable"
+    except (AppError, OSError):
+        return "unknown"
+
+
+def startup_failure(result):
+    """Keep useful failure evidence without exposing raw paths or runtime logs."""
+    code = result.get("returncode") if isinstance(result, dict) else None
+    code = code if type(code) is int else None
+    output = result.get("output", "") if isinstance(result, dict) else ""
+    output = output if isinstance(output, str) else ""
+    reason = "no valid startup result"
+    if code is not None:
+        try:
+            reason = signal.Signals(-code).name if code < 0 else "exit " + str(code)
+        except ValueError:
+            reason = "signal " + str(-code)
+    intel = "not_checked" if code == 0 else intel_execution_status()
+    details = {"startup_exit_code": code, "startup_result": reason, "intel_execution": intel,
+               "rosetta_runtime_unreadable": "Failed to open libRosettaRuntime" in output}
+    if code == 0:
+        message = "CueGen started but returned unexpected version or help information."
+    else:
+        message = "CueGen failed its protected startup check (" + reason + ")."
+        if intel == "available":
+            message += " This Mac can run Intel apps; the failure is in the protected cue-engine startup."
+        elif intel == "unavailable":
+            message += " macOS also failed its Intel-app support check. On Apple Silicon, check Rosetta before retrying."
+        else:
+            message += " Intel-app support could not be checked."
+        if details["rosetta_runtime_unreadable"]:
+            message += " Rosetta's runtime file could not be opened."
+    return message + " DJList did not access your Rekordbox database.", details
 
 
 def parse_proposals(result, source, options):
@@ -305,6 +358,7 @@ class CueGenBridge:
         self.runtime = runtime or CueGenRuntime(store, platform=self.platform)
         self._runtime_check = None
         self._runtime_issue = None
+        self._runtime_diagnostics = None
         self._lock = threading.Lock()
 
     def _supported(self):
@@ -336,6 +390,7 @@ class CueGenBridge:
         return {**component, "configured": configured, "supported": supported and real, "message": message,
                 "required_version": SUPPORTED_VERSION, "version": SUPPORTED_VERSION if checked else None,
                 "runtime_check": "passed" if checked else "failed" if self._runtime_issue else "not_checked",
+                "runtime_diagnostics": self._runtime_diagnostics if self._runtime_issue else None,
                 "live_database_writes": False, "engine": "cuegen"}
 
     def prepare_runtime(self, progress=None):
@@ -353,6 +408,7 @@ class CueGenBridge:
             raise _error("Leave the demo before preparing the cue engine.", "demo_mode")
         if not self._supported():
             raise _error("CueGen requires macOS sandbox-exec. This app never falls back to an unsandboxed run.")
+        self._runtime_diagnostics = None
         try:
             self.runtime.prepare(progress)
             executable = self.runtime.verified_path(force=True)
@@ -371,7 +427,8 @@ class CueGenBridge:
                     or len(output.encode("utf-8")) > 64 * 1024
                     or re.findall(r"^Version ([0-9.]+)\s*$", output, re.M) not in ([SUPPORTED_VERSION], [SUPPORTED_VERSION + ".0"])
                     or "Usage: CueGen.Console [OPTION]..." not in output):
-                raise _error("The installed cue engine did not pass its protected startup check. On Apple Silicon, check that Rosetta is already available. DJList did not access your Rekordbox database.", "cuegen_runtime")
+                message, self._runtime_diagnostics = startup_failure(result)
+                raise _error(message, "cuegen_runtime")
             self.runtime.verified_path(force=True)
             with _directory(executable.parent) as parent:
                 if _fingerprint(os.stat(executable.name, dir_fd=parent, follow_symlinks=False)) != fingerprint:

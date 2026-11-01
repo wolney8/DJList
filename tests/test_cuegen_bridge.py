@@ -16,7 +16,8 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import Store
 from cue_planner import CuePlanner, CuePlannerError
-from cuegen_bridge import CueGenBridge, validate_options, _arguments, parse_proposals, sandbox_profile, run_bounded
+from cuegen_bridge import (CueGenBridge, validate_options, _arguments, parse_proposals,
+                           sandbox_profile, run_bounded, intel_execution_status)
 from library_inventory import LibraryInventory
 from rekordbox_backups import RekordboxBackups
 
@@ -167,15 +168,55 @@ class CueGenBridgeTests(unittest.TestCase):
         # to read its descendants (including the actual collection database).
         self.assertIn('(allow file-read-data (literal "/"))', profile)
         self.assertNotIn('(subpath "/")', profile)
+        self.assertIn('(subpath "/Library/Apple/usr/libexec/oah")', profile)
+        self.assertIn('(allow file-map-executable (subpath "/private/var/db/oah"))', profile)
+        for line in profile.splitlines():
+            if line.startswith("(allow file-write"):
+                self.assertNotIn("/oah", line)
+        self.assertNotIn('(subpath "/Library")', profile)
+        self.assertNotIn('(subpath "/private/var/db")', profile)
         self.assertIn("(deny network*)", profile)
         self.assertEqual(self.backups.status()["backups"], [])
 
     def test_internal_setup_fails_closed_and_status_reports_failed_probe(self):
         self.probe_result = {"returncode": 1, "output": "runtime unavailable"}
-        self.assert_code("cuegen_runtime", self.bridge.prepare_runtime)
+        with patch("cuegen_bridge.intel_execution_status", return_value="unknown"):
+            self.assert_code("cuegen_runtime", self.bridge.prepare_runtime)
         self.assertEqual(self.bridge.status()["runtime_check"], "failed")
         self.assertEqual(self.calls, [])
         self.assertEqual(self.backups.status()["backups"], [])
+
+    def test_rosetta_runtime_failure_does_not_imply_missing_intel_support(self):
+        self.probe_result = {"returncode": -6, "output": "rosetta error: Failed to open libRosettaRuntime\n/private/user/path"}
+        with patch("cuegen_bridge.intel_execution_status", return_value="available"):
+            self.assert_code("cuegen_runtime", self.bridge.prepare_runtime)
+        status = self.bridge.status()
+        self.assertIn("This Mac can run Intel apps", status["message"])
+        self.assertIn("SIGABRT", status["message"])
+        self.assertNotIn("check Rosetta", status["message"])
+        self.assertNotIn("/private/user/path", json.dumps(status))
+        self.assertEqual(status["runtime_diagnostics"]["intel_execution"], "available")
+        self.assertTrue(status["runtime_diagnostics"]["rosetta_runtime_unreadable"])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.backups.status()["backups"], [])
+        self.probe_result = {"returncode": 0, "output": "Usage: CueGen.Console [OPTION]...\nVersion 1.0.37.0\n"}
+        self.assertEqual(self.bridge.prepare_runtime()["runtime_check"], "passed")
+        self.assertIsNone(self.bridge.status()["runtime_diagnostics"])
+
+    def test_failed_intel_support_check_is_distinct_from_protected_engine_failure(self):
+        self.probe_result = {"returncode": 1, "output": "posix_spawn: Bad CPU type in executable"}
+        with patch("cuegen_bridge.intel_execution_status", return_value="unavailable"):
+            self.assert_code("cuegen_runtime", self.bridge.prepare_runtime)
+        self.assertIn("macOS also failed its Intel-app support check", self.bridge.status()["message"])
+        self.assertEqual(self.bridge.status()["runtime_diagnostics"]["intel_execution"], "unavailable")
+        self.assertEqual(self.calls, [])
+
+    def test_unexpected_help_is_reported_without_guessing_rosetta_failure(self):
+        self.probe_result = {"returncode": 0, "output": "Usage: wrong tool\nVersion 9.0\n"}
+        with patch("cuegen_bridge.intel_execution_status") as intel:
+            self.assert_code("cuegen_runtime", self.bridge.prepare_runtime)
+            intel.assert_not_called()
+        self.assertIn("unexpected version or help", self.bridge.status()["message"])
 
     def test_runtime_success_is_not_reported_after_executable_changes(self):
         self.bridge.prepare_runtime()
@@ -394,3 +435,25 @@ class CueGenBridgeTests(unittest.TestCase):
                 os.kill(pid, 9)
             except ProcessLookupError:
                 pass
+
+
+class IntelExecutionProbeTests(unittest.TestCase):
+    def test_fixed_os_probe_requires_successful_x86_output(self):
+        for result, expected in (({"returncode": 0, "output": "x86_64\n"}, "available"),
+                                 ({"returncode": 1, "output": "x86_64\n"}, "unavailable"),
+                                 ({"returncode": 0, "output": "arm64\n"}, "unavailable")):
+            with self.subTest(result=result), patch("cuegen_bridge.sys.platform", "darwin"), \
+                    patch("cuegen_bridge.run_bounded", return_value=result) as runner:
+                self.assertEqual(intel_execution_status(), expected)
+                self.assertEqual(runner.call_args.args[0], ["/usr/bin/arch", "-x86_64", "/usr/bin/uname", "-m"])
+                self.assertEqual(runner.call_args.kwargs["cwd"], Path("/"))
+                self.assertEqual(runner.call_args.kwargs["timeout"], 5)
+                self.assertLessEqual(runner.call_args.kwargs["output_limit"], 4096)
+
+    def test_unavailable_probe_is_unknown_and_other_platforms_do_not_execute_it(self):
+        with patch("cuegen_bridge.sys.platform", "darwin"), \
+                patch("cuegen_bridge.run_bounded", side_effect=OSError("OS probe could not start")):
+            self.assertEqual(intel_execution_status(), "unknown")
+        with patch("cuegen_bridge.sys.platform", "linux"), patch("cuegen_bridge.run_bounded") as runner:
+            self.assertEqual(intel_execution_status(), "unknown")
+            runner.assert_not_called()
