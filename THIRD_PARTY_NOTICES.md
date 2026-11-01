@@ -29,6 +29,13 @@ mandatory macOS sandbox and bounded one-track output; it does not grant rights
 to recordings or analysis from other products. Actual binary/runtime
 compatibility and Rekordbox import are separate verification requirements.
 
+[`vendor/cuegen/DEPENDENCIES.json`](vendor/cuegen/DEPENDENCIES.json) records the
+exact component's dependency manifest and package licence metadata.
+[`vendor/cuegen/DEPENDENCY_NOTICES.txt`](vendor/cuegen/DEPENDENCY_NOTICES.txt)
+retains the associated licence/source notices, including TagLibSharp's LGPL
+terms and the .NET runtime notices. Setup copies these files and CueGen's MIT
+licence beside the managed executable. No executable is mirrored in this repo.
+
 ## TinyTag audio metadata reader
 
 DJList 0.5.0 bundles the unmodified runtime package from **TinyTag 2.3.2**,

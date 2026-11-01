@@ -77,7 +77,7 @@ def download_release(progress=None):
                 raise _error("The cue-engine release size has changed. Setup stopped before installation.", "cuegen_download")
             while True:
                 if time.monotonic() > deadline:
-                    raise _error("The cue-engine download took too long. Try Prepare cue engine again.", "cuegen_download")
+                    raise _error("The cue-engine download took too long. Try Check cue engine again.", "cuegen_download")
                 chunk = response.read(min(256 * 1024, RELEASE["archive_size"] + 1 - len(data)))
                 if not chunk:
                     break

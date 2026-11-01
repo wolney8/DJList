@@ -4,6 +4,15 @@ Status for **0.7.0, API 7 — 31 October 2026**. Implemented does not mean verif
 user's Mac. [VERIFICATION.md](VERIFICATION.md) records the checks and limitations;
 [AGENTS.md](AGENTS.md) defines the project's data and operation boundaries.
 
+## Unreleased work — no version change
+
+The `work/internal-cuegen-relocation` branch keeps version 0.7.0/API 7. It adds
+internal CueGen provisioning/startup checks and an evidence-based Rekordbox
+relocation handoff. It is not a new release or proof of installation on the
+user's Mac. See [VERIFICATION.md](VERIFICATION.md) for actual native-engine CI
+results. A live database/ANLZ relocation writer remains unimplemented; the new
+handoff must not be described as automatic database updates.
+
 ## Implemented
 
 | Area | Current behavior |

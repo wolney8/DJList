@@ -210,9 +210,17 @@ def parse_proposals(result, source, options):
     if not isinstance(output, str) or len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
         raise _error("CueGen returned an invalid or oversized response.", "cuegen_output_invalid")
     output = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", output)
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    versions = re.findall(r"^Info: Starting CueGen version ([0-9.]+)\s*$", output, re.M)
-    if versions != [SUPPORTED_VERSION] and versions != [SUPPORTED_VERSION + ".0"]:
+    # The pinned binary uses NLog FullName levels (Information/Warning) and
+    # quotes structured string values. Accept that captured native format as
+    # well as NLog's short-level format; do not loosen any record validation.
+    lines = [re.sub(r"^(Information|Warning):", lambda match:
+                    "Info:" if match.group(1) == "Information" else "Warn:", line.strip())
+             for line in output.splitlines() if line.strip()]
+    version_prefix = "Info: Starting CueGen version "
+    versions = [line[len(version_prefix):] for line in lines if line.startswith(version_prefix)]
+    supported_versions = {SUPPORTED_VERSION, SUPPORTED_VERSION + ".0",
+                          '"' + SUPPORTED_VERSION + '"', '"' + SUPPORTED_VERSION + '.0"'}
+    if len(versions) != 1 or versions[0] not in supported_versions:
         raise _error("This adapter supports CueGen 1.0.37. Select that version before running a review.", "cuegen_version")
     if (result.get("returncode") not in {0, 1}
             or any(re.match(r"^(Error|Fatal):", line, re.I) for line in lines)
@@ -225,8 +233,10 @@ def parse_proposals(result, source, options):
     path = source["entry"]["path"]
     expected = ("Info: Getting cue points from phrase analysis for " + track_id + " with file at " + path
                 if options["source"] == "phrases" else "Info: Reading cue points for " + track_id + " from tag of " + path)
+    quoted_expected = ('Info: Getting cue points from phrase analysis for "' + track_id + '" with file at "' + path + '"'
+                       if options["source"] == "phrases" else 'Info: Reading cue points for "' + track_id + '" from tag of "' + path + '"')
     headers = [line for line in lines if line.startswith("Info: Getting cue points from phrase analysis for ") or line.startswith("Info: Reading cue points for ")]
-    if headers != [expected]:
+    if len(headers) != 1 or headers[0] not in {expected, quoted_expected}:
         raise _error("CueGen did not identify exactly the selected XML track and path. No suggestions were accepted.", "cuegen_track_mismatch")
     if any("BPM is unknown, assuming" in line for line in lines):
         raise _error("CueGen would have assumed a BPM. Analyse this track in Rekordbox and export fresh XML first.", "cuegen_analysis_required")
@@ -237,7 +247,10 @@ def parse_proposals(result, source, options):
         if len(proposals) >= 100:
             raise _error("CueGen produced more suggestions than a single-track review allows.", "cuegen_output_invalid")
         try:
-            row = json.loads(line[len("Info: Created cue point "):])
+            payload = line[len("Info: Created cue point "):]
+            if payload.startswith('"') and payload.endswith('"'):
+                payload = payload[1:-1]
+            row = json.loads(payload)
             if not isinstance(row, dict) or str(row.get("ContentID", "")) != track_id:
                 raise ValueError()
             start, end, kind = row.get("InMsec"), row.get("OutMsec", -1), row.get("Kind")

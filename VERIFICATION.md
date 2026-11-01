@@ -7,6 +7,41 @@ external SSD or live master.db was available in this environment.
 
 The previous record is preserved in [VERIFICATION_V06.md](docs/VERIFICATION_V06.md).
 
+## Unreleased maintenance work
+
+Branch: `work/internal-cuegen-relocation`. The application and API remain
+**0.7.0 / 7**; no new release or user installation is claimed. The original
+0.7 verification below is retained as historical evidence.
+
+- **417 Python tests pass locally**, including managed component provisioning,
+  protected startup-result validation, request boundaries and persistent
+  relocation evidence. JavaScript helper/syntax and whitespace checks pass.
+- The existing synthetic localhost HTTP workflow passes after the integration.
+- The first work-branch CI caught an actual protected-startup failure. A narrow
+  macOS loader fix now lets the real pinned CueGen engine open the disposable
+  encrypted database and generate the expected Intro/Chorus/Outro positions.
+  That run exposed a second defect: the real engine's quoted log fields and
+  full level names differed from the earlier fixture. The parser and fixtures
+  now follow that captured format; a passing full native run is still required.
+- `tools/cuegen_runtime_smoke.py` provisions the actual pinned official binary,
+  uses the production macOS sandbox, and builds a synthetic SQLCipher database
+  plus two audio/analysis records. Its intended assertions cover Intro/Chorus/
+  Outro positions, exact selected-track scope, retained existing XML cues/grid,
+  unchanged source hashes and a checked backup. Only the closed-library process
+  result is injected; passing mock tests alone does not satisfy this check.
+- New UI source wiring and script syntax were checked. The cloud preview could
+  not be visually exercised because its error tab was blocked by the browser
+  URL policy; no browser-policy workaround was attempted. The earlier 0.7
+  browser checks below do not certify the new maintenance controls.
+- Rekordbox relocation is a durable handoff and **Verified in XML** check only.
+  No live database/ANLZ writer, automatic relocation or full-library restore
+  verification is implemented or installed on the user's Mac.
+
+The short [Mac verification guide](docs/VERIFY_ON_YOUR_MAC.md) covers the real
+SSD, playback, Incoming, metadata, activity, backup and one-track checks still
+needed. A synthetic fixture does not establish those facts for the user's
+collection.
+
 ## Automated checks
 
 - **377 Python unit/regression tests pass** on the local Linux environment.

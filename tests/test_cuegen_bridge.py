@@ -93,10 +93,12 @@ class CueGenBridgeTests(unittest.TestCase):
         self.entry_id = next(row["id"] for row in self.library._entries(str(self.music)) if row["path"] == str(self.audio))
 
     def output(self, source="phrases"):
-        header = f"Info: Getting cue points from phrase analysis for 17 with file at {self.audio}" if source == "phrases" else f"Info: Reading cue points for 17 from tag of {self.audio}"
-        return "\n".join(["Info: Starting CueGen version " + self.version, header,
-                          *["Info: Created cue point " + json.dumps(row) for row in self.rows], self.extra,
-                          "Info: Finished cue points creation without errors"])
+        # Exact FullName/quoted-value shape captured from the pinned native
+        # executable in CI; this is deliberately not the old assumed layout.
+        header = f'Information: Getting cue points from phrase analysis for "17" with file at "{self.audio}"' if source == "phrases" else f'Information: Reading cue points for "17" from tag of "{self.audio}"'
+        return "\n".join(['Information: Starting CueGen version "' + self.version + '"', header,
+                          *['Information: Created cue point "' + json.dumps(row) + '"' for row in self.rows], self.extra,
+                          "Information: Finished cue points creation without errors"])
 
     def runner(self, args, **kwargs):
         if args[-1] == "--help":

@@ -20,7 +20,7 @@ The supported handoff is:
 1. In Rekordbox, use **File > Display All Missing Files > Relocate** on the
    existing record and select the new path from DJList.
 2. Export the collection XML to the path saved in DJList.
-3. Use **Verify from XML**. DJList reads that file again itself.
+3. Use **Check fresh Rekordbox XML**. DJList reads that file again itself.
 
 **Verified in XML** requires the same unique `TrackID` at the final path,
 unchanged audio-file identity, all previously exported cue/grid entries and

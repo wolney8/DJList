@@ -4,6 +4,19 @@ Assessment checked against the primary sources below on 31 October 2026.
 Repository activity and upstream compatibility claims do not establish
 compatibility with the user's installed Rekordbox version.
 
+The unreleased maintenance branch now provisions CueGen internally from an
+exact verified existing copy or its pinned official release. No separate app
+launch or terminal command is required. This replaces the separate executable
+setup described in the original 0.7 assessment below. The component remains a
+protected process with bounded output, not a reimplementation of CueGen's
+analysis logic. Native runtime checks use a synthetic encrypted library in
+macOS CI; consult the verification record before calling them verified.
+
+Rekordbox relocation is researched separately in
+[REKORDBOX_RELOCATION.md](REKORDBOX_RELOCATION.md). The current implementation
+tracks renames and verifies fresh XML after Rekordbox performs Relocate; it
+does not update the live database or analysis paths.
+
 ## Implemented in DJList 0.7: grid-based cue review
 
 `cue_planner.py` implements a review and XML export workflow using Python's

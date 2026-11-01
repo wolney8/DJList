@@ -142,6 +142,7 @@ class LibraryToolRouteTests(unittest.TestCase):
         def checked():
             active = self.app.activity.snapshot()["active"]
             self.assertTrue(any("renamed tracks" in item["label"] for item in active))
+            self.assertEqual(active[0]["phase"], "Reading fresh XML and checking renamed track locations")
             return {"entries": [], "counts": {"total": 0}, "direct_database_write": False}
         with patch.object(self.app.rekordbox_relocation, "verify", side_effect=checked) as verify:
             self.assertEqual(self.request("/api/rekordbox-relocation/verify", {}, {"X-CSRF-Token": "bad"})[0], 403)

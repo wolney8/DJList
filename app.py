@@ -362,7 +362,7 @@ class Application:
         self.library_watcher.start()
         self.backups.start()
 
-    def library_task(self, callback, *args, **kwargs):
+    def library_task(self, callback, *args, activity_label=None, **kwargs):
         """Serialize reviewed file work with folder changes; annotations stay usable."""
         if not self.work_lock.acquire(blocking=False):
             raise AppError(self.busy_message(), 409)
@@ -376,7 +376,7 @@ class Application:
                       "export_report": "Exporting the library report", "preview": "Preparing a file review",
                       "apply": "Applying reviewed file changes", "undo_apply": "Undoing reviewed file changes",
                       "prepare_runtime": "Preparing the built-in cue engine"}
-            label = labels.get(getattr(callback, "__name__", ""), "Reviewing library information")
+            label = activity_label or labels.get(getattr(callback, "__name__", ""), "Reviewing library information")
             with self.activity.track("library", label):
                 return callback(*args, **kwargs)
         finally:
@@ -436,7 +436,8 @@ class Application:
 
     @reported("rekordbox-relocation", "Checking renamed tracks against fresh Rekordbox XML")
     def verify_rekordbox_relocation(self):
-        return self.library_task(self.rekordbox_relocation.verify)
+        return self.library_task(self.rekordbox_relocation.verify,
+                                 activity_label="Reading fresh XML and checking renamed track locations")
 
     def library_watch_status(self):
         settings = self.store.settings()
