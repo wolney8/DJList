@@ -10,19 +10,29 @@ The previous record is preserved in [VERIFICATION_V06.md](docs/VERIFICATION_V06.
 ## Unreleased maintenance work — 1 November 2026
 
 Branch: `work/internal-cuegen-relocation`. The application and API remain
-**0.7.0 / 7**; no new release or user installation is claimed. The original
+**0.7.0 / 7**; no new release is published. The original
 0.7 verification below is retained as historical evidence.
 
-- **418 Python tests pass locally**, including managed component provisioning,
+- **423 Python tests pass locally**, including managed component provisioning,
   protected startup-result validation, request boundaries and persistent
   relocation evidence. JavaScript helper/syntax and whitespace checks pass.
 - The existing synthetic localhost HTTP workflow passes after the integration.
-- **Actual CueGen passes on an Intel Mac runner** in
-  [run 41290460368](https://github.com/wolney8/DJList/actions/runs/41290460368)
-  at `cc102b5815f4d0485e142b183578d25e02fda236`. The ordinary Linux/macOS jobs
+- **Actual CueGen passes on Apple Silicon/Tahoe and Intel Mac runners** in
+  [run 41307386024](https://github.com/wolney8/DJList/actions/runs/41307386024)
+  at `b5d090418e50f92be678418000cc94d673b30c89`. The ordinary Linux/macOS jobs
   also pass. Native testing exposed and fixed two real defects: a missing
   literal-root read needed by the macOS loader, and the pinned executable's
   quoted/full-level log format differing from the earlier mock fixture.
+- A reported M1 startup failure on macOS 26.5.1 (25F80) was reproduced on an
+  arm64 macOS 26.6.2 (25G83) runner. The OS Intel execution probe passed, but
+  CueGen failed with `Failed to open libRosettaRuntime`: Rosetta was available,
+  while the protected process could not read its runtime. Fixed OS-runtime
+  read/map permissions plus Rosetta AOT-cache executable mapping resolve the
+  failure. No OS-cache writes, broad Library read permission or unprotected
+  CueGen fallback were added. Intel macOS 15.7.9 also passes with the fix.
+- Startup errors now distinguish successful Intel execution support from a
+  failed protected CueGen launch, with an exit/signal code and no raw runtime
+  paths. A failed Intel support probe is not reported as proof Rosetta is absent.
 - `tools/cuegen_runtime_smoke.py` provisions the actual pinned official binary,
   uses the production macOS sandbox, and builds a synthetic SQLCipher database
   plus two audio/analysis records. The passing run verifies Intro/Chorus/Outro
@@ -40,9 +50,10 @@ Branch: `work/internal-cuegen-relocation`. The application and API remain
 - Rekordbox relocation is a durable handoff and **Verified in XML** check only.
   No live database/ANLZ writer, automatic relocation or full-library restore
   verification is implemented or installed on the user's Mac.
-- Apple Silicon/Rosetta, actual user phrase/Mixed In Key data, musical cue
-  quality, Rekordbox XML import and the user's real backup/restore workflow
-  remain unverified. The successful synthetic Intel check does not certify them.
+- The corrected build on the user's exact M1/macOS 26.5.1 installation, actual
+  user phrase/Mixed In Key data, musical cue quality, Rekordbox XML import and
+  the user's real backup/restore workflow remain unverified. The synthetic
+  Intel and Apple Silicon runs do not certify those facts.
 
 The short [Mac verification guide](docs/VERIFY_ON_YOUR_MAC.md) covers the real
 SSD, playback, Incoming, metadata, activity, backup and one-track checks still

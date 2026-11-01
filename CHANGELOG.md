@@ -9,6 +9,10 @@
 - Add a real macOS engine check using a synthetic encrypted database and
   generated beat/phrase analysis; fixture execution is distinct from a real
   Rekordbox import or the user's installation.
+- Fix protected startup on Apple Silicon by permitting the specific OS-owned
+  Rosetta runtime reads and executable mappings. Test the actual engine on
+  arm64 macOS Tahoe as well as Intel. Distinguish Intel execution availability
+  from a failed protected engine launch in the reported error.
 - Add Rekordbox locations to the library workspace. Track rename chains and
   undo, show exact old/new paths, and verify a fresh XML against original
   TrackID/cue/grid/playlist evidence. Actual relocation still uses Rekordbox's

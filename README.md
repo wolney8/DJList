@@ -569,6 +569,14 @@ blocks execution. The upstream component is Intel x64; Apple Silicon needs an
 already working Rosetta environment. DJList does not install Rosetta or reduce
 macOS security settings.
 
+Protected startup and the three synthetic cue-preservation cases pass on
+Apple Silicon with macOS Tahoe 26.6.2, as well as Intel macOS 15.7.9. A failed
+startup now reports whether a fixed Apple utility can run as Intel code;
+working Intel support is distinguished from a failure inside CueGen's protected
+startup. The check does not install Rosetta, run CueGen without protection or
+open the Rekordbox database. See [VERIFICATION.md](VERIFICATION.md) for evidence
+and the remaining checks on the user's exact Mac and library.
+
 **CueGen phrases / Mixed In Key** is the default suggestion engine. Select
 existing Rekordbox phrase analysis or Mixed In Key cue data, hot or memory
 cues, count, spacing and optional timing, colours, names or loop settings.

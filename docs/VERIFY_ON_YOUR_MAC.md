@@ -53,6 +53,12 @@ For the internal cue engine, **Settings → Check cue engine** must report a
 passed protected startup check. There is no separate CueGen launch or command.
 An installed component with a failed startup check is not a passing result.
 
+If the message says **This Mac can run Intel apps**, the OS execution check
+passed; send the protected-startup error instead of assuming Rosetta is missing.
+If it says macOS failed the Intel-app support check, follow
+[Apple's Rosetta guidance](https://support.apple.com/102527), then retry.
+The startup check does not open the Rekordbox database.
+
 Use one analysed test copy already imported into Rekordbox, with phrase
 analysis, a checked beatgrid, no existing hot cues and a fresh XML export.
 You can keep a memory cue to check that it is preserved. Close Rekordbox.
