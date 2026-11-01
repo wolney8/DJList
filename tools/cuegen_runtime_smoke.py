@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import stat
 import struct
 import subprocess
@@ -119,6 +120,29 @@ def _hashes(paths):
     return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
 
 
+def native_host_diagnostics():
+    """Identify the real test host and its existing Intel execution support.
+
+    These are fixed Apple OS utilities, not a CueGen fallback. Do not install
+    Rosetta or change the machine's configuration to make a check pass.
+    """
+    if sys.platform != "darwin":
+        raise RuntimeError("This check requires a real macOS host.")
+    machine = platform.machine()
+    print("Native test host architecture:", machine)
+    expected = os.environ.get("DJLIST_EXPECTED_HOST_ARCH")
+    if expected and machine != expected:
+        raise RuntimeError("Native test host architecture mismatch: " + machine + "; expected " + expected)
+    for label, argv in (
+        ("macOS version", ["/usr/bin/sw_vers"]),
+        ("Existing OS x86_64 execution support", ["/usr/bin/arch", "-x86_64", "/usr/bin/uname", "-m"]),
+    ):
+        result = run_bounded(argv, cwd=Path.cwd(), env=dict(os.environ), timeout=15, output_limit=8192)
+        print(label + ":", result)
+        if result["returncode"] != 0:
+            raise RuntimeError(label + " could not be verified; no CueGen process was started.")
+
+
 def _ci_native_diagnostics(started_at):
     """Bounded CI-only evidence for native launch failures; no policy changes.
 
@@ -130,7 +154,9 @@ def _ci_native_diagnostics(started_at):
     # Compare the loader's shipped rules with the narrow production allowlist.
     # Fixed OS-owned paths only; never import an unchecked profile into policy.
     for name in ("/System/Library/Sandbox/Profiles/dyld-support.sb",
-                 "/usr/share/sandbox/dyld-support.sb"):
+                 "/usr/share/sandbox/dyld-support.sb",
+                 "/System/Library/Sandbox/Profiles/rosetta-support.sb",
+                 "/usr/share/sandbox/rosetta-support.sb"):
         path = Path(name)
         try:
             if path.is_file() and path.stat().st_size <= 32 * 1024:
@@ -319,6 +345,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sqlcipher", required=True, help="Official SQLCipher CLI used only to build the synthetic CI database")
     arguments = parser.parse_args()
+    native_host_diagnostics()
     run(arguments.sqlcipher)
     run(arguments.sqlcipher, hot_cues=((1, 24),))
     run(arguments.sqlcipher, hot_cues=((1, 24), (7, 48)))

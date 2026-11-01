@@ -45,8 +45,16 @@ jobs:
       - name: Mac launcher syntax
         run: bash -n Start_DJList.command
   cuegen-macos:
-    name: Real CueGen engine on synthetic library
-    runs-on: macos-15-intel
+    name: Real CueGen engine on synthetic library (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            arch: x86_64
+          - os: macos-26
+            arch: arm64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,4 +66,6 @@ jobs:
       - name: Install synthetic database fixture builder
         run: brew install sqlcipher
       - name: Run managed engine inside the production macOS sandbox
+        env:
+          DJLIST_EXPECTED_HOST_ARCH: ${{ matrix.arch }}
         run: python tools/cuegen_runtime_smoke.py --sqlcipher "$(brew --prefix sqlcipher)/bin/sqlcipher"
